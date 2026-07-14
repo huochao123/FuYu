@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>浮屿</string>
+    <key>CFBundleExecutable</key>
+    <string>FuYu</string>
+    <key>CFBundleIdentifier</key>
+    <string>ai.fuyu.desktop</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>浮屿</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>ai.fuyu.desktop.actions</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>fuyu</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>浮屿需要使用麦克风来听取你的语音指令。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>浮屿需要将你的语音转换为文字，以便理解并执行指令。</string>
+    <key>NSUserActivityTypes</key>
+    <array>
+        <string>ai.fuyu.desktop.startVoice</string>
+    </array>
+</dict>
+</plist>

@@ -1,0 +1,558 @@
+import AVFoundation
+import Speech
+
+@MainActor
+final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
+    var onTranscriptReady: ((String) -> Void)?
+
+    private let state: AppState
+    private let preferences: AssistantPreferences
+    private let audioEngine = AVAudioEngine()
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+    private let synthesizer = AVSpeechSynthesizer()
+    private var audioPlayer: AVAudioPlayer?
+    private var speechTask: Task<Void, Never>?
+    private var continuousTask: Task<Void, Never>?
+
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var submissionTask: Task<Void, Never>?
+    private var silenceTask: Task<Void, Never>?
+    private var latestTranscript = ""
+    private var isListening = false
+    private var tapInstalled = false
+    private var recordingFile: AVAudioFile?
+    private var recordingURL: URL?
+
+    init(state: AppState, preferences: AssistantPreferences) {
+        self.state = state
+        self.preferences = preferences
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    var permissionSummary: String {
+        "语音识别=\(SFSpeechRecognizer.authorizationStatus().rawValue)，麦克风=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)"
+    }
+
+    func testMiMoSpeech() async throws -> String {
+        let data = try await generateMiMoSpeech("你好，我是浮屿。")
+        guard data.count > 44 else { throw VoiceOutputError.invalidResponse }
+        return "MiMo TTS 已返回可播放音频（\(data.count / 1024) KB）"
+    }
+
+    func testMiMoASR() async throws -> String {
+        let audio = try await generateMiMoSpeech("你好，我是浮屿。")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FuYu-ASR-Smoke-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try audio.write(to: url, options: .atomic)
+        let transcript = try await transcribeWithMiMo(fileURL: url)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { throw VoiceOutputError.invalidResponse }
+        return "MiMo ASR 已识别：\(transcript.prefix(40))"
+    }
+
+    func startListening() async {
+        guard !isListening else { return }
+        cancelSpeech()
+        submissionTask?.cancel()
+
+        guard await requestPermissionsIfNeeded() else {
+            state.presentError("需要麦克风和语音识别权限，请在系统设置中允许。")
+            return
+        }
+
+        stopRecognitionResources()
+        cleanupRecording()
+        latestTranscript = ""
+
+        guard let speechRecognizer, speechRecognizer.isAvailable else {
+            state.presentError("语音识别暂时不可用，请稍后再试。")
+            return
+        }
+        if preferences.recognitionEngine == .appleLocal,
+           !speechRecognizer.supportsOnDeviceRecognition {
+            state.presentError("这台 Mac 当前没有可用的中文本地识别，请安装听写语言或改用在线识别。")
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        request.requiresOnDeviceRecognition = preferences.recognitionEngine == .appleLocal
+        recognitionRequest = request
+
+        recognitionTask = Self.makeRecognitionTask(
+            recognizer: speechRecognizer,
+            request: request,
+            service: self
+        )
+
+        let input = audioEngine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            stopRecognitionResources()
+            state.presentError("没有检测到可用的麦克风。")
+            return
+        }
+
+        prepareRecording(format: format)
+        Self.installAudioTap(on: input, format: format, request: request, recordingFile: recordingFile)
+        tapInstalled = true
+
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+            isListening = true
+            state.beginListening()
+            scheduleInitialSilenceTimeout()
+        } catch {
+            stopRecognitionResources()
+            state.presentError("无法启动麦克风：\(error.localizedDescription)")
+        }
+    }
+
+    func stopListeningAndSubmit() {
+        guard isListening else { return }
+        silenceTask?.cancel()
+        silenceTask = nil
+        audioEngine.stop()
+        removeTapIfNeeded()
+        recognitionRequest?.endAudio()
+        isListening = false
+
+        let captured = latestTranscript
+        let capturedRecordingURL = recordingURL
+        submissionTask?.cancel()
+        submissionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            guard let self, !Task.isCancelled else { return }
+            var finalText = self.latestTranscript.isEmpty ? captured : self.latestTranscript
+            self.stopRecognitionResources()
+            if self.preferences.recognitionEngine == .mimoHybrid,
+               let capturedRecordingURL {
+                do {
+                    let corrected = try await self.transcribeWithMiMo(fileURL: capturedRecordingURL)
+                    if !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        finalText = corrected
+                    }
+                } catch {
+                    // Apple live recognition remains the offline/failure fallback.
+                }
+            }
+            self.cleanupRecording()
+            guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.state.resetToIdle()
+                return
+            }
+            self.onTranscriptReady?(finalText)
+        }
+    }
+
+    func speak(_ text: String, displayText: String? = nil) {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        cancelSpeech()
+        state.beginSpeaking(displayText ?? cleaned)
+        switch preferences.speechEngine {
+        case .system:
+            speakWithSystem(cleaned)
+        case .mimo, .openAI, .localClone:
+            let engine = preferences.speechEngine
+            speechTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let data = try await self.generateCloudSpeech(cleaned, engine: engine)
+                    try Task.checkCancellation()
+                    try self.play(data)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    if self.preferences.speechFallback {
+                        self.speakWithSystem(cleaned)
+                    } else {
+                        self.state.presentError("语音生成失败：\(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
+    func cancelAll() {
+        submissionTask?.cancel()
+        submissionTask = nil
+        silenceTask?.cancel()
+        silenceTask = nil
+        continuousTask?.cancel()
+        continuousTask = nil
+        stopRecognitionResources()
+        cleanupRecording()
+        cancelSpeech()
+    }
+
+    func continueAfterSilentReply() {
+        scheduleContinuousListening()
+    }
+
+    private func cancelSpeech() {
+        speechTask?.cancel()
+        speechTask = nil
+        if audioPlayer?.isPlaying == true { audioPlayer?.stop() }
+        audioPlayer = nil
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+    }
+
+    private func speakWithSystem(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        if !preferences.systemVoiceIdentifier.isEmpty,
+           let selected = AVSpeechSynthesisVoice(identifier: preferences.systemVoiceIdentifier) {
+            utterance.voice = selected
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+        }
+        utterance.rate = Float(preferences.speechRate)
+        utterance.pitchMultiplier = 1.02
+        synthesizer.speak(utterance)
+    }
+
+    private func generateCloudSpeech(_ text: String, engine: SpeechEngine) async throws -> Data {
+        switch engine {
+        case .system:
+            throw VoiceOutputError.invalidConfiguration
+        case .mimo:
+            return try await generateMiMoSpeech(text)
+        case .openAI:
+            return try await generateOpenAISpeech(text)
+        case .localClone:
+            return try await generateLocalSpeech(text)
+        }
+    }
+
+    private func generateMiMoSpeech(_ text: String) async throws -> Data {
+        guard let key = KeychainStore.password(service: "codex-mimo-api-key"), !key.isEmpty else {
+            throw VoiceOutputError.missingKey("MiMo")
+        }
+        let messages: [[String: String]] = [
+            ["role": "user", "content": String(preferences.speechInstructions.prefix(500))],
+            ["role": "assistant", "content": text]
+        ]
+        let body: [String: Any] = [
+            "model": "mimo-v2.5-tts",
+            "messages": messages,
+            "audio": ["format": "wav", "voice": preferences.mimoVoice.rawValue]
+        ]
+        let data = try await requestAudio(
+            url: preferences.mimoEndpoint,
+            key: key,
+            body: body,
+            extraHeaders: ["api-key": key]
+        )
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let choices = object?["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: Any]
+        let audio = message?["audio"] as? [String: Any]
+        guard let encoded = audio?["data"] as? String,
+              let decoded = Data(base64Encoded: encoded) else {
+            throw VoiceOutputError.invalidResponse
+        }
+        return decoded
+    }
+
+    private func transcribeWithMiMo(fileURL: URL) async throws -> String {
+        guard let key = KeychainStore.password(service: "codex-mimo-api-key"), !key.isEmpty else {
+            throw VoiceOutputError.missingKey("MiMo")
+        }
+        let audioData = try Data(contentsOf: fileURL)
+        guard !audioData.isEmpty else { throw VoiceOutputError.invalidResponse }
+        let dataURI = "data:audio/wav;base64,\(audioData.base64EncodedString())"
+        let body: [String: Any] = [
+            "model": "mimo-v2.5-asr",
+            "messages": [[
+                "role": "user",
+                "content": [[
+                    "type": "input_audio",
+                    "input_audio": ["data": dataURI]
+                ]]
+            ]],
+            "asr_options": ["language": "auto"]
+        ]
+        let data = try await requestAudio(
+            url: preferences.mimoEndpoint,
+            key: key,
+            body: body,
+            extraHeaders: ["api-key": key]
+        )
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let choices = object?["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: Any]
+        guard let content = message?["content"] as? String else {
+            throw VoiceOutputError.invalidResponse
+        }
+        return content
+    }
+
+    private func generateOpenAISpeech(_ text: String) async throws -> Data {
+        guard let key = preferences.ttsAPIKey, !key.isEmpty else {
+            throw VoiceOutputError.missingKey("OpenAI")
+        }
+        let body: [String: Any] = [
+            "model": "gpt-4o-mini-tts",
+            "voice": preferences.openAIVoice.rawValue,
+            "input": text,
+            "instructions": String(preferences.speechInstructions.prefix(500)),
+            "response_format": "wav"
+        ]
+        return try await requestAudio(
+            url: "https://api.openai.com/v1/audio/speech",
+            key: key,
+            body: body
+        )
+    }
+
+    private func generateLocalSpeech(_ text: String) async throws -> Data {
+        guard let url = URL(string: preferences.localCloneEndpoint),
+              url.scheme == "http" || url.scheme == "https" else {
+            throw VoiceOutputError.invalidConfiguration
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "text": text,
+            "format": "wav",
+            "instructions": String(preferences.speechInstructions.prefix(500))
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw VoiceOutputError.requestFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return data
+    }
+
+    private func requestAudio(
+        url: String,
+        key: String,
+        body: [String: Any],
+        extraHeaders: [String: String] = [:]
+    ) async throws -> Data {
+        guard let endpoint = URL(string: url) else { throw VoiceOutputError.invalidConfiguration }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        extraHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw VoiceOutputError.requestFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+        return data
+    }
+
+    private func play(_ data: Data) throws {
+        let player = try AVAudioPlayer(data: data)
+        player.delegate = self
+        player.prepareToPlay()
+        guard player.play() else { throw VoiceOutputError.playbackFailed }
+        audioPlayer = player
+    }
+
+    private func requestPermissionsIfNeeded() async -> Bool {
+        let speechAllowed: Bool
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            speechAllowed = true
+        case .notDetermined:
+            speechAllowed = await Self.requestSpeechAuthorization()
+        default:
+            speechAllowed = false
+        }
+
+        let microphoneAllowed: Bool
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneAllowed = true
+        case .notDetermined:
+            microphoneAllowed = await AVCaptureDevice.requestAccess(for: .audio)
+        default:
+            microphoneAllowed = false
+        }
+
+        return speechAllowed && microphoneAllowed
+    }
+
+    /// Speech invokes its authorization callback on an arbitrary queue. Keeping
+    /// this bridge nonisolated prevents Swift 6 from treating that callback as
+    /// main-actor code and trapping before the continuation can resume.
+    private nonisolated static func requestSpeechAuthorization() async -> Bool {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status == .authorized)
+            }
+        }
+    }
+
+    private nonisolated static func makeRecognitionTask(
+        recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        service: VoiceService
+    ) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { [weak service] result, error in
+            let transcript = result?.bestTranscription.formattedString
+            let errorDescription = error?.localizedDescription
+            Task { @MainActor in
+                guard let service else { return }
+                if let transcript {
+                    service.latestTranscript = transcript
+                    service.state.updateTranscript(service.latestTranscript)
+                    service.scheduleAutomaticSubmission(for: transcript)
+                }
+                if let errorDescription, service.isListening {
+                    service.stopRecognitionResources()
+                    service.cleanupRecording()
+                    service.state.presentError("语音识别中断：\(errorDescription)")
+                }
+            }
+        }
+    }
+
+    private nonisolated static func installAudioTap(
+        on input: AVAudioInputNode,
+        format: AVAudioFormat,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        recordingFile: AVAudioFile?
+    ) {
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request, recordingFile] buffer, _ in
+            request?.append(buffer)
+            try? recordingFile?.write(from: buffer)
+        }
+    }
+
+    private func stopRecognitionResources() {
+        silenceTask?.cancel()
+        silenceTask = nil
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        removeTapIfNeeded()
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        recordingFile = nil
+        isListening = false
+    }
+
+    private func prepareRecording(format: AVAudioFormat) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FuYu-ASR-\(UUID().uuidString).wav")
+        do {
+            recordingFile = try AVAudioFile(forWriting: url, settings: format.settings)
+            recordingURL = url
+        } catch {
+            recordingFile = nil
+            recordingURL = nil
+        }
+    }
+
+    private func cleanupRecording() {
+        recordingFile = nil
+        if let recordingURL { try? FileManager.default.removeItem(at: recordingURL) }
+        recordingURL = nil
+    }
+
+    private func removeTapIfNeeded() {
+        guard tapInstalled else { return }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        tapInstalled = false
+    }
+
+    private func scheduleAutomaticSubmission(for transcript: String) {
+        silenceTask?.cancel()
+        guard preferences.autoSubmit else { return }
+        let value = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+
+        let milliseconds = Self.automaticSubmissionDelayMilliseconds(
+            for: value,
+            baseSeconds: preferences.endPauseSeconds
+        )
+
+        silenceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+            guard let self,
+                  !Task.isCancelled,
+                  self.isListening,
+                  self.latestTranscript == transcript else { return }
+            self.stopListeningAndSubmit()
+        }
+    }
+
+    static func automaticSubmissionDelayMilliseconds(for value: String, baseSeconds: Double) -> Int {
+        let unfinishedEndings = ["然后", "还有", "因为", "但是", "所以", "就是", "比如", "嗯", "呃"]
+        let sentenceEndings = ["。", "！", "？", ".", "!", "?"]
+        let base = Int(baseSeconds * 1_000)
+        if unfinishedEndings.contains(where: value.hasSuffix) { return base + 1_300 }
+        if sentenceEndings.contains(where: value.hasSuffix) { return max(1_200, base - 250) }
+        return value.count <= 8 ? base + 350 : base
+    }
+
+    private func scheduleInitialSilenceTimeout() {
+        silenceTask?.cancel()
+        let timeout = preferences.silenceTimeout
+        silenceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard let self,
+                  !Task.isCancelled,
+                  self.isListening,
+                  self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            self.stopRecognitionResources()
+            self.cleanupRecording()
+            self.state.resetToIdle()
+        }
+    }
+
+    private func scheduleContinuousListening() {
+        continuousTask?.cancel()
+        guard preferences.continuousConversation else { return }
+        continuousTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(550))
+            guard let self, !Task.isCancelled else { return }
+            await self.startListening()
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didFinish utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor [weak self] in
+            self?.state.finishSpeaking()
+            self?.scheduleContinuousListening()
+        }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.audioPlayer = nil
+            self?.state.finishSpeaking()
+            self?.scheduleContinuousListening()
+        }
+    }
+}
+
+private enum VoiceOutputError: LocalizedError {
+    case missingKey(String), invalidConfiguration, invalidResponse, requestFailed(Int), playbackFailed
+    var errorDescription: String? {
+        switch self {
+        case let .missingKey(provider): "没有找到 \(provider) 语音密钥"
+        case .invalidConfiguration: "语音服务配置无效"
+        case .invalidResponse: "语音服务没有返回可播放的声音"
+        case let .requestFailed(code): "语音服务请求失败（\(code)）"
+        case .playbackFailed: "无法播放生成的声音"
+        }
+    }
+}

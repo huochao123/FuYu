@@ -1,0 +1,270 @@
+import Foundation
+import SwiftUI
+
+@MainActor
+final class AppState: ObservableObject {
+    enum OverlayMode: Equatable {
+        case orb
+        case voice
+        case response
+        case task
+        case approval
+    }
+
+    enum Phase: String, Equatable {
+        case idle = "待命"
+        case listening = "正在聆听"
+        case thinking = "正在思考"
+        case executing = "正在执行"
+        case speaking = "正在回复"
+        case answered = "已回复"
+        case error = "出现问题"
+    }
+
+    struct TaskStep: Identifiable, Equatable {
+        enum Status: Equatable { case pending, active, complete }
+        let id: UUID
+        let title: String
+        let detail: String
+        var status: Status
+
+        init(id: UUID = UUID(), title: String, detail: String, status: Status) {
+            self.id = id
+            self.title = title
+            self.detail = detail
+            self.status = status
+        }
+    }
+
+    @Published var isExpanded = false
+    @Published var phase: Phase = .idle
+    @Published var transcript = "需要我做什么？"
+    @Published var modelLabel = "MiMo"
+    @Published var taskTitle = "准备任务"
+    @Published var progress = 0.0
+    @Published var showPermission = false
+    @Published var approvalTitle = "允许浮屿执行这个操作？"
+    @Published var approvalDetail = "执行前会再次确认，不会在后台静默操作。"
+    @Published private(set) var approvalID: UUID?
+    @Published var steps: [TaskStep] = []
+
+    var onVoiceRequested: (() -> Void)?
+    var onVoiceSubmitRequested: (() -> Void)?
+    var onCancelRequested: (() -> Void)?
+    var onApprovalGranted: ((UUID) -> Void)?
+
+    private var demoTask: Task<Void, Never>?
+    private var replyCollapseTask: Task<Void, Never>?
+    private var errorDismissTask: Task<Void, Never>?
+    private var isRunningDemo = false
+
+    var phaseColor: Color {
+        switch phase {
+        case .idle: .secondary
+        case .listening: Color(red: 0.12, green: 0.66, blue: 1.0)
+        case .thinking: Color(red: 0.58, green: 0.38, blue: 1.0)
+        case .executing: Color(red: 0.08, green: 0.72, blue: 0.61)
+        case .speaking: Color(red: 0.94, green: 0.30, blue: 0.55)
+        case .answered: Color(red: 0.19, green: 0.72, blue: 0.56)
+        case .error: Color(red: 0.95, green: 0.25, blue: 0.28)
+        }
+    }
+
+    var overlayMode: OverlayMode {
+        guard isExpanded else { return .orb }
+        if showPermission { return .approval }
+        if phase == .executing { return .task }
+        if phase == .answered { return .voice }
+        return .voice
+    }
+
+    func requestVoice() {
+        replyCollapseTask?.cancel()
+        onVoiceRequested?()
+    }
+
+    func submitVoice() {
+        onVoiceSubmitRequested?()
+    }
+
+    func beginListening() {
+        demoTask?.cancel()
+        replyCollapseTask?.cancel()
+        errorDismissTask?.cancel()
+        showPermission = false
+        isExpanded = true
+        phase = .listening
+        transcript = "我在听…"
+        progress = 0
+        steps = []
+    }
+
+    func updateTranscript(_ text: String) {
+        guard phase == .listening else { return }
+        transcript = text.isEmpty ? "我在听…" : text
+    }
+
+    func beginThinking(userText: String) {
+        replyCollapseTask?.cancel()
+        showPermission = false
+        isExpanded = true
+        phase = .thinking
+        transcript = userText
+        progress = 0
+        steps = []
+    }
+
+    @discardableResult
+    func presentApproval(title: String, detail: String) -> UUID {
+        let id = UUID()
+        approvalID = id
+        approvalTitle = title
+        approvalDetail = detail
+        showPermission = true
+        isExpanded = true
+        phase = .thinking
+        return id
+    }
+
+    func beginExecution(title: String) {
+        showPermission = false
+        isExpanded = true
+        phase = .executing
+        taskTitle = title
+        progress = 0.08
+        steps = [
+            .init(title: "连接 Hermes", detail: "准备安全执行环境", status: .active),
+            .init(title: "执行操作", detail: "按照已批准的指令操作", status: .pending),
+            .init(title: "检查结果", detail: "确认操作是否完成", status: .pending)
+        ]
+    }
+
+    func updateExecution(progress newProgress: Double, step index: Int) {
+        progress = min(max(newProgress, 0), 1)
+        guard steps.indices.contains(index) else { return }
+        for i in steps.indices {
+            if i < index { steps[i].status = .complete }
+            else if i == index { steps[i].status = .active }
+        }
+    }
+
+    func beginSpeaking(_ text: String) {
+        replyCollapseTask?.cancel()
+        showPermission = false
+        isExpanded = true
+        phase = .speaking
+        transcript = text
+        progress = steps.isEmpty ? 0 : 1
+        for index in steps.indices { steps[index].status = .complete }
+    }
+
+    func finishSpeaking() {
+        guard phase == .speaking else { return }
+        phase = .idle
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard let self, self.phase == .idle, !self.showPermission else { return }
+            self.isExpanded = false
+        }
+    }
+
+    func presentSilentReply(_ text: String) {
+        replyCollapseTask?.cancel()
+        showPermission = false
+        isExpanded = true
+        phase = .answered
+        transcript = text
+        progress = steps.isEmpty ? 0 : 1
+        for index in steps.indices { steps[index].status = .complete }
+
+        replyCollapseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, !Task.isCancelled, self.phase == .answered else { return }
+            self.resetToIdle()
+        }
+    }
+
+    func presentError(_ message: String) {
+        errorDismissTask?.cancel()
+        showPermission = false
+        isExpanded = true
+        phase = .error
+        transcript = message
+        progress = 0
+        errorDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard let self, !Task.isCancelled, self.phase == .error else { return }
+            self.resetToIdle()
+        }
+    }
+
+    func approveFromUserInteraction() {
+        guard showPermission, let approvalID else { return }
+        showPermission = false
+        self.approvalID = nil
+        if isRunningDemo {
+            finishDemo()
+            return
+        }
+        onApprovalGranted?(approvalID)
+    }
+
+    func cancel() {
+        demoTask?.cancel()
+        demoTask = nil
+        isRunningDemo = false
+        replyCollapseTask?.cancel()
+        replyCollapseTask = nil
+        errorDismissTask?.cancel()
+        errorDismissTask = nil
+        onCancelRequested?()
+        resetToIdle(message: "已停止")
+    }
+
+    func resetToIdle(message: String = "需要我做什么？") {
+        replyCollapseTask?.cancel()
+        replyCollapseTask = nil
+        errorDismissTask?.cancel()
+        errorDismissTask = nil
+        showPermission = false
+        approvalID = nil
+        phase = .idle
+        progress = 0
+        transcript = message
+        steps = []
+        isExpanded = false
+    }
+
+    func runDemo() {
+        demoTask?.cancel()
+        isRunningDemo = true
+        beginThinking(userText: "帮我整理下载文件夹里的文件。")
+
+        demoTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(550))
+            guard !Task.isCancelled else { return }
+            self.presentApproval(
+                title: "允许浮屿整理下载文件夹？",
+                detail: "将按类型移动 12 个文件，不会删除内容，可随时撤销。"
+            )
+        }
+    }
+
+    private func finishDemo() {
+        beginExecution(title: "整理下载文件夹")
+        demoTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+            self.updateExecution(progress: 0.5, step: 1)
+            try? await Task.sleep(for: .milliseconds(550))
+            guard !Task.isCancelled else { return }
+            self.updateExecution(progress: 0.92, step: 2)
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self.isRunningDemo = false
+            self.beginSpeaking("演示完成。没有修改任何文件。")
+        }
+    }
+}

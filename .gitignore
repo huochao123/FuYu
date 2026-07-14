@@ -1,0 +1,25 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+
+# 本地构建、安装包与个人备份
+outputs/
+outputs*.zip
+work/
+*.dmg
+*.app
+
+# 用户配置、密钥和对话记忆
+credentials.json
+conversation-memory.json
+*.plist
+!Resources/Info.plist
+*.key
+*.pem
+*.p12
+*.mobileprovision
+
+# Xcode 用户状态
+xcuserdata/
+*.xcuserstate
