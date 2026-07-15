@@ -179,6 +179,28 @@ enum SelfTestRunner {
                 delegation.contains("先理解目标") && delegation.contains("检查当前环境") && delegation.contains("验证结果"),
                 "复杂任务交给 Hermes 规划、执行与验证"
             )
+            check(
+                !AssistantRuntime.requiresPlanReview(userText: "打开 Safari")
+                    && AssistantRuntime.requiresPlanReview(userText: "整理下载文件夹，然后按照类型归档，并检查是否有重复文件"),
+                "简单任务直达、复杂任务进入方案预审"
+            )
+            let approvedReview = MiMoAssistantClient.parsePlanReview(
+                #"{"status":"approved","summary":"按类型整理并检查结果","finalPrompt":"只整理下载目录，完成后检查分类"}"#,
+                fallbackPrompt: "整理下载目录"
+            )
+            check(
+                approvedReview == .approved(summary: "按类型整理并检查结果", finalPrompt: "只整理下载目录，完成后检查分类"),
+                "Hermes 方案审核通过解析"
+            )
+            let clarifyReview = MiMoAssistantClient.parsePlanReview(
+                #"{"status":"clarify","question":"重复文件要保留哪一份？"}"#,
+                fallbackPrompt: "整理下载目录"
+            )
+            check(clarifyReview == .clarify(question: "重复文件要保留哪一份？"), "复杂任务歧义会停止并询问用户")
+            check(
+                HermesCommandRunner.planningPrompt(for: "整理下载目录").contains("只返回方案，不执行任务"),
+                "预审阶段禁止 Hermes 修改电脑"
+            )
 
             let cardURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("fuyu-card-\(UUID().uuidString).json")

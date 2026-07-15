@@ -119,23 +119,33 @@ final class AssistantRuntime {
                         self.state.presentError(message)
                         return
                     }
-                    if self.preferences.requireActionApproval {
-                        let approvalID = self.state.presentApproval(title: title, detail: detail)
-                        self.pendingAction = PendingAction(
-                            approvalID: approvalID,
-                            title: title,
-                            prompt: prompt,
-                            shouldSpeak: shouldSpeak
+                    if Self.requiresPlanReview(userText: cleaned) {
+                        self.state.recordActionStatus("复杂任务预审：正在向 Hermes 获取只读方案")
+                        let proposedPlan = try await self.hermes.proposePlan(for: prompt)
+                        try Task.checkCancellation()
+                        let review = try await self.modelClient.reviewExecutionPlan(
+                            userRequest: cleaned,
+                            originalPrompt: prompt,
+                            hermesPlan: proposedPlan,
+                            profile: self.preferences.profile
                         )
+                        try Task.checkCancellation()
+                        switch review {
+                        case let .approved(summary, finalPrompt):
+                            self.state.recordActionStatus("方案审核通过：\(summary)")
+                            self.prepareAction(
+                                title: title,
+                                detail: summary,
+                                prompt: finalPrompt,
+                                shouldSpeak: shouldSpeak
+                            )
+                        case let .clarify(question):
+                            self.pendingAction = nil
+                            self.state.recordActionStatus("方案需要补充信息：\(question)")
+                            self.deliverReply(question, suggestedSpoken: question, shouldSpeak: shouldSpeak)
+                        }
                     } else {
-                        let approvalID = UUID()
-                        self.pendingAction = PendingAction(
-                            approvalID: approvalID,
-                            title: title,
-                            prompt: prompt,
-                            shouldSpeak: shouldSpeak
-                        )
-                        self.executeApprovedAction(approvalID: approvalID)
+                        self.prepareAction(title: title, detail: detail, prompt: prompt, shouldSpeak: shouldSpeak)
                     }
                 }
             } catch is CancellationError {
@@ -146,6 +156,42 @@ final class AssistantRuntime {
                 self.state.presentError(error.localizedDescription)
             }
         }
+    }
+
+    private func prepareAction(title: String, detail: String, prompt: String, shouldSpeak: Bool) {
+        if preferences.requireActionApproval {
+            let approvalID = state.presentApproval(title: title, detail: detail)
+            pendingAction = PendingAction(
+                approvalID: approvalID,
+                title: title,
+                prompt: prompt,
+                shouldSpeak: shouldSpeak
+            )
+        } else {
+            let approvalID = UUID()
+            pendingAction = PendingAction(
+                approvalID: approvalID,
+                title: title,
+                prompt: prompt,
+                shouldSpeak: shouldSpeak
+            )
+            executeApprovedAction(approvalID: approvalID)
+        }
+    }
+
+    static func requiresPlanReview(userText: String) -> Bool {
+        let value = userText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return false }
+        let simpleVerbs = ["打开", "关闭", "启动", "退出", "调高", "调低", "切换"]
+        let complexSignals = [
+            "然后", "之后", "同时", "并且", "全部", "所有", "批量", "按照", "整理", "开发", "修改",
+            "修复", "测试", "检查", "分析", "优化", "安装", "卸载", "配置", "项目", "文件夹里的"
+        ]
+        let punctuationSteps = value.filter { ",，;；".contains($0) }.count
+        if value.count <= 24, simpleVerbs.contains(where: value.contains), !complexSignals.contains(where: value.contains) {
+            return false
+        }
+        return value.count >= 38 || punctuationSteps >= 2 || complexSignals.contains(where: value.contains)
     }
 
     func cancelCurrentWork() {

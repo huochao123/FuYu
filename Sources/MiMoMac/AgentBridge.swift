@@ -6,6 +6,11 @@ enum AssistantDecision: Equatable, Sendable {
     case action(title: String, detail: String, hermesPrompt: String)
 }
 
+enum ExecutionPlanReview: Equatable, Sendable {
+    case approved(summary: String, finalPrompt: String)
+    case clarify(question: String)
+}
+
 enum AssistantServiceError: LocalizedError {
     case missingAPIKey
     case invalidEndpoint
@@ -95,6 +100,51 @@ actor MiMoAssistantClient {
         memory.append(.init(role: "assistant", content: "\(prefix)：\(title)。\(result)"))
         memory = Array(memory.suffix(max(profile.contextTurns * 2, 4)))
         if profile.persistentMemory { try persistMemory() }
+    }
+
+    func reviewExecutionPlan(
+        userRequest: String,
+        originalPrompt: String,
+        hermesPlan: String,
+        profile: AssistantProfile
+    ) async throws -> ExecutionPlanReview {
+        let systemPrompt = """
+        你是浮屿的任务审核器。审核 Hermes 提出的执行方案是否能满足用户目标。
+        只输出 JSON，不执行操作，也不要与 Hermes 继续讨论。
+        如果目标、范围、关键选择和验证方法都足够清楚，输出：
+        {"status":"approved","summary":"给用户看的简短方案摘要，最多80字","finalPrompt":"结合审核结果写给 Hermes 的最终执行指令，必须包含目标、边界和验证标准"}
+        如果存在会明显改变结果的歧义、缺少关键选择或高风险未说明，输出：
+        {"status":"clarify","question":"只向用户询问一个最关键的问题"}
+        不要因为小细节提问；能在批准范围内安全判断的就通过。不得循环审核。
+        """
+        let userText = """
+        用户原始要求：\(userRequest)
+        浮屿整理的任务：\(originalPrompt)
+        Hermes 只读预案：\(hermesPlan)
+        """
+        let content = try await requestCompletion(
+            systemPrompt: systemPrompt,
+            userText: userText,
+            profile: profile,
+            includeContext: true
+        )
+        return Self.parsePlanReview(content, fallbackPrompt: originalPrompt)
+    }
+
+    static func parsePlanReview(_ content: String, fallbackPrompt: String) -> ExecutionPlanReview {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first <= last,
+              let data = String(trimmed[first...last]).data(using: .utf8),
+              let wire = try? JSONDecoder().decode(WirePlanReview.self, from: data) else {
+            return .clarify(question: "Hermes 的方案没有通过审核。你希望我优先达到什么结果？")
+        }
+        if wire.status.lowercased() == "approved" {
+            return .approved(
+                summary: wire.summary?.nonEmpty ?? "Hermes 已给出方案，浮屿审核通过。",
+                finalPrompt: wire.finalPrompt?.nonEmpty ?? fallbackPrompt
+            )
+        }
+        return .clarify(question: wire.question?.nonEmpty ?? "这个任务还有关键细节不明确，你希望最终达到什么效果？")
     }
 
     func testConnection(profile: AssistantProfile) async throws -> String {
@@ -295,6 +345,14 @@ final class HermesCommandRunner {
     }
 
     func execute(_ approvedPrompt: String) async throws -> String {
+        try await run(Self.delegationPrompt(for: approvedPrompt))
+    }
+
+    func proposePlan(for taskPrompt: String) async throws -> String {
+        try await run(Self.planningPrompt(for: taskPrompt))
+    }
+
+    private func run(_ instruction: String) async throws -> String {
         guard isAvailable else { throw AssistantServiceError.hermesUnavailable }
         cancel()
 
@@ -302,7 +360,7 @@ final class HermesCommandRunner {
         process.executableURL = executableURL
         process.arguments = [
             "-z",
-            Self.delegationPrompt(for: approvedPrompt)
+            instruction
         ]
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         process.environment = ProcessInfo.processInfo.environment
@@ -385,6 +443,18 @@ final class HermesCommandRunner {
         \(approvedPrompt)
         执行中遇到与预期不同的界面或结果时，在批准范围内调整方法；不要仅因第一种方法失败就假装完成。
         完成后必须检查目标是否真的达到，并用简洁中文返回：实际做了什么、验证结果；若信息不足或无法安全完成，停止并明确说明需要用户补充什么。
+        """
+    }
+
+    static func planningPrompt(for taskPrompt: String) -> String {
+        """
+        这是浮屿在正式执行前向你进行的一次只读方案咨询。
+        绝对不要点击、输入、修改、创建、删除、发送或执行任何会改变 Mac 状态的操作。
+        你可以根据现有知识分析当前环境；如必须查看环境，只能进行只读检查。
+        请为下面的任务给出简洁方案：目标理解、建议步骤、风险或歧义、可以验证完成的标准。
+        任务：
+        \(taskPrompt)
+        只返回方案，不执行任务。浮屿审核后会另行发出正式执行指令。
         """
     }
 
@@ -534,6 +604,13 @@ private struct WireDecision: Decodable {
     let content: String?
     let text: String?
     let message: String?
+}
+
+private struct WirePlanReview: Decodable {
+    let status: String
+    let summary: String?
+    let finalPrompt: String?
+    let question: String?
 }
 
 private struct APIErrorEnvelope: Decodable {
