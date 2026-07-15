@@ -18,6 +18,40 @@
 
 ![浮屿语音气泡](docs/images/voice-bubble.png)
 
+### 一次完整任务演示 / One complete task walkthrough
+
+下面展示的是当前版本真实具备的流程。示例中的界面均来自实际运行版本；为了避免产生无用会议，文档只演示交互链路，不在录制时真正创建会议。
+
+> **你：**“下午 3 点到 4 点，用腾讯会议创建一次测试会议。”
+> **浮屿：**识别这是 Mac 操作，补齐目标与完成标准；复杂任务先向 Hermes 获取只读方案并审核。
+> **授权：**紧凑气泡显示时间、会议类型和执行方式。你可以点击“允许”，也可以直接说“允许执行”。
+> **执行：**Hermes 接收任务、调用相应工具并检查结果。只有收到真实成功证据后，浮屿才会记录“执行成功”。
+> **追问：**你可以继续问“刚才成功了吗”，聊天记录会使用真实任务结果回答，而不是只依赖模型措辞。
+
+![浮屿真实语音授权气泡](docs/images/voice-approval.png)
+
+任务进行中也可以自然改口：说“等一下，改成下午 5 点结束”，浮屿会终止旧 Hermes 进程、把修改接回原任务并重新规划；只说“停一下”则暂停并等待下一条要求。说“可以了”“就这样”“执行吧”会在约 0.3 秒内提交，不再等待完整停顿时间。
+
+```mermaid
+flowchart LR
+    A[语音提出任务] --> B{信息完整?}
+    B -- 否 --> C[只追问关键参数]
+    C --> B
+    B -- 是 --> D[Hermes 只读预案]
+    D --> E[浮屿审核方案]
+    E --> F[点击或语音授权]
+    F --> G[Hermes 执行与验证]
+    G --> H{收到真实结果?}
+    H -- 是 --> I[记录成功或失败]
+    H -- 否 --> J[标记中断或未验证]
+```
+
+### 像对话一样随时打断 / Conversational interruption
+
+浮屿朗读长回答时，你一开口就会停止播报并接收新内容。执行任务时也会监听明确的暂停或修改要求，旧任务会被真实停止，不会在后台继续。语音回声过滤会忽略浮屿自己的播报；该功能可在高级设置中关闭。
+
+![浮屿真实高级语音交互设置](docs/images/advanced-interaction.jpeg)
+
 ### 与语音界面一致的执行气泡 / Execution bubble
 
 Mac 操作不再弹出大型任务面板。执行时由当前皮肤动画自然展开为紧凑气泡，只保留任务名称、当前步骤、进度和停止按钮；完成后直接过渡到回复状态。下图录制自实际运行版本。
@@ -58,11 +92,16 @@ All images below are captured from the current build. They are not concept rende
 - **多模型支持**：内置 MiMo、OpenAI、Claude、Gemini、DeepSeek、通义千问、Kimi、智谱 GLM、Ollama / LM Studio 与自定义兼容服务。
 - **可切换语音识别**：Apple 本地、Apple 自动，以及 Apple 实时字幕 + MiMo ASR 最终校正的混合模式。
 - **语音中断恢复**：识别服务或麦克风链路意外失效时会重建录音资源并有限次数自动重连；已有识别文字会优先保留。
+- **可打断的自然对话**：朗读时直接抢话；Hermes 执行中可以暂停、取消或追加修改，旧进程会被终止后再按新要求规划。
+- **语气结束词快速提交**：识别“可以了”“就这样”“执行吧”等明确结束语，约 0.3 秒内提交；“然后”“还有”等未完语气会继续等待。
 - **可靠的自然语音回复**：支持 macOS 离线声音、MiMo 云端音色、OpenAI TTS；智能模式会把长回答压成一句可朗读结论，避免出现文字有回复但声音直接跳过。
 - **分层本地记忆**：最近对话与永久习惯分开管理；可以直接说“记住……”保存习惯，随后每次对话都会使用，并可在设置中查看、添加或删除。
 - **人格与关系设定**：可自定义角色名称、背景、性格、说话方式，以及朋友、伴侣、家人、同事等关系方向。
 - **SillyTavern 兼容导入**：支持 Character Card V1/V2 JSON、常见 PNG 内嵌角色卡和 Chat Completion 提示词预设 JSON；导入前可预览字段、兼容性提示，并选择替换或合并。
 - **更可靠的 Mac 操作**：复杂任务会被整理成目标、约束和完成标准，再交给 Hermes 检查环境、规划、执行和验证；真实成功或失败结果会写回上下文。操作前确认默认开启，也可由用户在高级设置中关闭。
+- **独立语音授权**：授权卡使用单独识别通道，只接受允许或取消口令，不会把“允许执行”误当成新的聊天命令。
+- **自动修复模型格式**：模型或审核器返回异常格式时会自动清理上下文并重试一次，不会直接放弃原任务；连续失败仍会明确显示未执行。
+- **中断任务不冒充成功**：应用退出或执行链路没有返回真实结果时，历史记录会标记为中断或未验证。
 - **轻量执行气泡**：Mac 操作使用与语音回复一致的粒子动画和紧凑气泡展示步骤与进度，不再弹出大型任务框；异常卡住的任务会在 2 分钟后自动停止并记录原因。
 - **隐私可控**：不包含遥测或广告；模型密钥、偏好和记忆不写入源码仓库。
 
@@ -106,6 +145,7 @@ fuyu://listen
 - 选择云端模型、云端 TTS 或 MiMo 混合识别时，相应文本或音频会发送给用户选择的服务商。
 - Mac 操作确认默认开启。关闭后，模型判断为操作指令的请求会直接交给 Hermes 执行。
 - `outputs/`、`work/`、个人配置、凭据、记忆和备份文件均被仓库规则排除。
+- 开启“允许说话打断”后，浮屿会在朗读和 Hermes 执行期间保持语音检测；使用混合在线识别时，检测到的当前轮音频会发送给所选识别服务。
 
 详见 [PRIVACY.md](PRIVACY.md) 与 [SECURITY.md](SECURITY.md)。
 
@@ -133,6 +173,18 @@ scripts/create-installer.sh
 
 FuYu is a lightweight native voice assistant for macOS. It stays completely hidden while idle and appears only when invoked through Siri, a global shortcut, or the menu bar. During listening, reasoning, and speaking, a compact particle glyph and speech bubble communicate the current state. FuYu can also route natural-language actions to Hermes / CUA to help operate the Mac under a user-controlled approval policy.
 
+### A complete task walkthrough
+
+This is the real interaction path in the current build. The screenshots come from the running app; the documentation demonstrates the flow without creating a throwaway meeting during capture.
+
+> **You:** “Create a one-off Tencent Meeting today from 3 PM to 4 PM.”
+> **FuYu:** identifies an actionable request, preserves the goal and acceptance criteria, then requests one read-only Hermes proposal for a complex task.
+> **Approval:** a compact bubble shows the time, recurrence, and execution method. Click **Allow** or say “allow execution.”
+> **Execution:** Hermes receives the approved scope, uses the relevant tool, and verifies the result. FuYu records success only after a real result arrives.
+> **Follow-up:** ask whether the previous task succeeded; FuYu answers from the recorded action result instead of inventing completion from chat wording.
+
+While the task is running, say “wait—change the end time to 5 PM.” FuYu terminates the old Hermes process and re-plans from the original request plus your correction. Saying only “pause” stops the task and waits for the next instruction.
+
 ### Highlights
 
 - **Native floating experience** — sits below the notch by default and disappears when idle.
@@ -145,11 +197,16 @@ FuYu is a lightweight native voice assistant for macOS. It stays completely hidd
 - **Multiple model providers** — MiMo, OpenAI, Claude, Gemini, DeepSeek, Qwen, Kimi, GLM, Ollama / LM Studio, and custom compatible endpoints.
 - **Selectable speech recognition** — Apple on-device, Apple automatic, or Apple live captions with MiMo ASR final correction.
 - **Recognition recovery** — rebuilds recording resources and retries a limited number of times after unexpected recognition or microphone interruptions while preserving captured text.
+- **Conversational interruption** — speak over a long response, pause a running Hermes task, or add a correction. The old process is terminated before the revised request is planned.
+- **Intent-aware end-of-turn timing** — “that’s all”, “go ahead”, and similar explicit endings submit almost immediately, while unfinished connectors keep the microphone open.
 - **Reliable natural voice output** — macOS offline voices, MiMo cloud voices, OpenAI TTS, plus a reserved local voice-cloning endpoint. Smart mode condenses long replies into a speakable sentence instead of silently skipping them.
 - **Layered local memory** — recent conversation and explicit permanent habits are managed separately; say “remember…” to save a preference, then inspect or delete it in Settings.
 - **Personas and relationships** — customize the character name, background, personality, speaking style, and relationship direction.
 - **SillyTavern imports** — preview and import Character Card V1/V2 JSON, common embedded PNG cards, and Chat Completion prompt preset JSON; choose whether to replace or merge.
 - **More reliable Mac actions** — complex requests are turned into goals, constraints, and acceptance criteria so Hermes can inspect, plan, execute, and verify. Real results are written back into context. Approval remains enabled by default and can be disabled in Advanced Settings.
+- **Dedicated spoken approval** — approval phrases are handled by a separate local interaction channel and never become a new chat command.
+- **Malformed-response recovery** — invalid model or plan-review formatting is retried once with clean context before the action is declared blocked.
+- **Truthful interrupted state** — an action without a real tool result is recorded as interrupted or unverified, never as completed.
 - **Lightweight execution bubble** — Mac actions use the same particle motion and compact bubble language as voice replies instead of a large task panel. A task that remains stuck for two minutes is stopped and recorded as a failure.
 - **Privacy-conscious** — no telemetry or advertising; credentials, preferences, and memory are never part of the source repository.
 
@@ -191,6 +248,7 @@ fuyu://listen
 - Cloud model, TTS, and hybrid ASR features send the required text or audio to the provider selected by the user.
 - Mac action approval is enabled by default. Disabling it allows model-planned actions to be sent directly to Hermes.
 - Build output, local work files, credentials, memory, and personal backups are excluded from version control.
+- With voice interruption enabled, FuYu monitors for speech while replying or while Hermes is running. In hybrid cloud recognition mode, the detected turn audio is sent to the selected recognition provider.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.
 

@@ -1,5 +1,37 @@
 # 更新日志 / Changelog
 
+## v0.4.0 — 2026-07-15
+
+### 可打断的自然语音交互 / Conversational voice interruption
+
+- 浮屿朗读时可直接说话打断，并把新内容作为下一条指令继续处理。
+- Hermes 执行中可以说“停一下”“先别执行”暂停，或直接追加修改；旧进程会被真实终止，再结合原任务重新规划。
+- “可以了”“就这样”“执行吧”等明确结束语约 0.3 秒内提交；“然后”“还有”等未完语气会继续等待。
+- 新增回声过滤与 macOS 语音处理，减少浮屿把自己的播报识别成用户抢话。
+- 高级设置新增“允许说话打断”开关，默认开启。
+
+- Speak over FuYu to stop a long response and continue with a new instruction.
+- Pause or revise a running Hermes action; the old process is terminated before the original task and correction are re-planned.
+- Explicit endings such as “go ahead” submit in about 0.3 seconds, while unfinished connectors keep listening.
+- Added echo filtering and macOS voice processing to reduce self-transcription.
+- Added an enabled-by-default **Allow voice interruption** setting.
+
+### 可靠执行与授权 / Reliable execution and approval
+
+- 复杂任务采用一次 Hermes 只读预案与一次模型审核，预审阶段禁止控制电脑，避免循环讨论和提前执行。
+- 授权语音使用独立通道，“允许执行”“取消执行”不会再进入普通聊天或变成新命令。
+- 授权窗口升级为与悬浮入口一致的粒子玻璃气泡，并持续监听明确授权口令。
+- 模型或方案审核返回异常格式时会自动清理上下文并重试，而不是直接放弃任务。
+- 应用退出前没有收到真实工具结果的任务会标记为中断或未验证。
+- 普通应用打开命令、自然中文执行反馈、技术字符串过滤和真实结果回写得到加强。
+
+- Complex actions use one read-only Hermes proposal and one bounded model review; preflight cannot control the Mac.
+- Spoken approval uses a dedicated channel and never becomes a new conversation command.
+- The approval panel now uses the same compact particle-and-glass visual language as the rest of FuYu.
+- Malformed model or plan-review responses are automatically retried with clean context.
+- Actions without a real result before app exit are marked interrupted or unverified.
+- Improved generic app actions, natural Chinese result narration, technical-string filtering, and verified-result context.
+
 ## v0.3.1 — 2026-07-15
 
 - 新增参考 Hermes USER.md 思路的永久习惯记忆：只保存用户明确要求记住的内容，与最近对话分开，并可在设置中查看、添加和删除。

@@ -12,6 +12,9 @@ This roadmap separates what works today from planned work so product direction i
 - 可查看的本轮聊天与操作记录。
 - 自定义人格、关系、背景、性格和说话方式。
 - SillyTavern Character Card V1/V2 JSON、常见 PNG 内嵌卡与提示词预设的本机预览导入。
+- 复杂任务的一次只读预案、一次审核、真实执行与结果验证。
+- 朗读抢话、执行中暂停或修改，以及明确结束语快速提交。
+- 独立语音授权、异常格式自动恢复和中断任务标记。
 
 - Conversation context and optional local persistent memory.
 - Pre-action approval, visible execution status, and real Hermes results written back into context.
@@ -19,16 +22,21 @@ This roadmap separates what works today from planned work so product direction i
 - Visible conversation and action history for the current session.
 - Custom personas, relationships, backgrounds, traits, and speaking styles.
 - Local preview/import for SillyTavern Character Card V1/V2 JSON, common embedded PNG cards, and prompt presets.
+- A bounded read-only proposal, review, real execution, and result verification path for complex actions.
+- Speech barge-in, pause/revise during execution, and fast submission for explicit end-of-turn phrases.
+- Dedicated spoken approval, malformed-response recovery, and interrupted-task records.
 
 ## 下一阶段：任务状态 / Next: task state
 
 - 为每项操作保存独立任务记录：目标、计划、当前步骤、工具输出、失败原因与最终验证结果。
 - 回答“刚才完成了吗”“为什么失败”“继续上一步”前，优先读取任务状态，而不只依赖聊天文字。
 - 为未完成、部分完成、已完成和无法验证建立明确状态，禁止把“已经规划”说成“已经完成”。
+- 增加本地声纹注册与说话人验证，在视频播放和多人环境中只接受已登记用户；该功能必须提供误识别测试和随时关闭选项。
 
 - Track each action as a structured task: goal, plan, current step, tool output, failure reason, and verification result.
 - Read task state before answering “Did it finish?”, “Why did it fail?”, or “Continue the last step?” instead of relying only on chat text.
 - Distinguish planned, running, partially complete, complete, failed, and unverified states.
+- Add local speaker enrollment and verification so background video or other speakers can be ignored, with measurable false-match testing and an off switch.
 
 ## 智能体闭环 / Agent loop
 
