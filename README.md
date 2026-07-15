@@ -35,7 +35,7 @@ All images below are captured from the current build. They are not concept rende
 - **原生悬浮交互**：默认位于刘海下方；空闲隐藏，唤醒后出现，不遮挡正常工作。
 - **六款真实皮肤**：粒子声场、无框点波、经典圆球、极光流体、星轨共振和晶格脉冲。
 - **状态动画**：聆听、思考、播报、完成与错误状态具有不同粒子动效。
-- **菜单栏运行指示**：专属点阵图标会随待命、聆听、思考、执行、说话与异常改变颜色和形态，菜单内同时显示当前状态。
+- **菜单栏常驻运行指示**：专属点阵图标会随待命、聆听、思考、执行、说话与异常改变颜色和形态，菜单内同时显示当前状态。
 - **气泡式字幕**：你说的话与 AI 回复直接显示在悬浮图标旁，不使用传统聊天窗口。
 - **可追溯聊天记录**：从气泡进入本轮记录，查看用户输入、AI 回复以及 Mac 操作的执行中、成功或失败状态。
 - **多种唤醒方式**：支持长按 Fn / 地球键、可修改的组合键、菜单栏，以及 `fuyu://listen` Siri 快捷指令。
@@ -121,7 +121,7 @@ FuYu is a lightweight native voice assistant for macOS. It stays completely hidd
 - **Native floating experience** — sits below the notch by default and disappears when idle.
 - **Six live skins** — Particle Field, Bare Dot Wave, Classic Orb, Aurora Flow, Orbit Resonance, and Crystal Pulse.
 - **State-aware motion** — distinct particle animations for listening, thinking, speaking, completion, and errors.
-- **Menu-bar health indicator** — a distinctive dot-orbit icon changes with idle, listening, thinking, execution, speaking, and error states, with a readable status inside the menu.
+- **Persistent menu-bar health indicator** — a distinctive dot-orbit icon changes with idle, listening, thinking, execution, speaking, and error states, with a readable status inside the menu.
 - **Speech-bubble captions** — live input and AI responses appear beside the assistant instead of inside a chat window.
 - **Visible session history** — open the current conversation trail from the bubble, including user input, assistant replies, and Mac-action progress, success, or failure.
 - **Flexible invocation** — hold Fn/Globe, choose another global shortcut, use the menu bar, or invoke `fuyu://listen` from Siri Shortcuts.

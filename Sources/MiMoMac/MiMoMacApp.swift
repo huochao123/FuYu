@@ -158,6 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        statusItem?.isVisible = true
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         if voiceService == nil {
@@ -243,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.isVisible = true
         item.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
