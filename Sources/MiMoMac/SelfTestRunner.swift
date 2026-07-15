@@ -203,6 +203,15 @@ enum SelfTestRunner {
             } else {
                 check(false, "Mac 操作意图二次校验")
             }
+            let genericAppAction = MiMoAssistantClient.reconcileDecision(
+                .reply(text: "需要交给执行流程", spoken: nil),
+                userText: "打开计算器"
+            )
+            if case .action = genericAppAction {
+                check(true, "任意应用的直接打开命令进入执行流程")
+            } else {
+                check(false, "任意应用的直接打开命令进入执行流程")
+            }
             let delegation = HermesCommandRunner.delegationPrompt(for: "整理下载目录")
             check(
                 delegation.contains("先理解目标") && delegation.contains("检查当前环境") && delegation.contains("验证结果"),
@@ -223,6 +232,11 @@ enum SelfTestRunner {
                     for: "创建会议，今天下午3点到4点，单次会议"
                 ) == nil,
                 "参数完整的会议无需重复询问"
+            )
+            check(
+                AssistantRuntime.normalizedApprovalPhrase("允，允许，允许执行。") == "允允许允许执行"
+                    && AssistantRuntime.cleanActionTitle("帮我开一个会议\n用户补充信息：下午三点") == "帮我开一个会议",
+                "语音授权容错与授权标题美化"
             )
             let approvedReview = MiMoAssistantClient.parsePlanReview(
                 #"{"status":"approved","summary":"按类型整理并检查结果","finalPrompt":"只整理下载目录，完成后检查分类"}"#,

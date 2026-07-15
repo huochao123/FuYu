@@ -77,19 +77,24 @@ final class AssistantRuntime {
             return
         }
 
-        if isVoice, preferences.voiceActionApproval, state.showPermission {
-            let compact = cleaned.replacingOccurrences(of: " ", with: "")
-            let approvePhrases = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧", "允许"]
-            let denyPhrases = ["取消执行", "不要执行", "拒绝执行", "不允许", "取消", "算了"]
-            if approvePhrases.contains(compact) {
-                state.recordActionStatus("已通过语音确认")
+        if preferences.voiceActionApproval, state.showPermission {
+            let compact = Self.normalizedApprovalPhrase(cleaned)
+            let approvePhrases = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧"]
+            let denyPhrases = ["取消执行", "不要执行", "拒绝执行", "不允许执行", "取消", "算了"]
+            if denyPhrases.contains(where: compact.contains) {
+                state.recordActionStatus(isVoice ? "用户通过语音取消了操作" : "用户通过文字取消了操作", failed: true)
+                cancelCurrentWork()
+                state.resetToIdle(message: "操作已取消")
+                return
+            }
+            if approvePhrases.contains(where: compact.contains) {
+                state.recordActionStatus(isVoice ? "已通过语音确认" : "已通过文字确认")
                 state.approveFromUserInteraction()
                 return
             }
-            if denyPhrases.contains(compact) {
-                state.recordActionStatus("用户通过语音取消了操作", failed: true)
-                cancelCurrentWork()
-                state.resetToIdle(message: "操作已取消")
+            if isVoice {
+                state.recordActionStatus("没有识别到明确授权，仍在等待“允许执行”或“取消执行”")
+                Task { @MainActor [weak self] in await self?.voice.startListeningForApproval() }
                 return
             }
         }
@@ -204,11 +209,12 @@ final class AssistantRuntime {
     }
 
     private func prepareAction(title: String, detail: String, prompt: String, shouldSpeak: Bool) {
+        let displayTitle = Self.cleanActionTitle(title)
         if preferences.requireActionApproval {
-            let approvalID = state.presentApproval(title: title, detail: detail)
+            let approvalID = state.presentApproval(title: displayTitle, detail: detail)
             pendingAction = PendingAction(
                 approvalID: approvalID,
-                title: title,
+                title: displayTitle,
                 prompt: prompt,
                 shouldSpeak: shouldSpeak
             )
@@ -221,7 +227,7 @@ final class AssistantRuntime {
             let approvalID = UUID()
             pendingAction = PendingAction(
                 approvalID: approvalID,
-                title: title,
+                title: displayTitle,
                 prompt: prompt,
                 shouldSpeak: shouldSpeak
             )
@@ -277,6 +283,16 @@ final class AssistantRuntime {
             return "这个会议什么时候开始、持续多久？是单次会议还是长期重复？如果长期，请告诉我重复频率和结束日期或总场次。"
         }
         return nil
+    }
+
+    static func normalizedApprovalPhrase(_ text: String) -> String {
+        text.filter { $0.isLetter || $0.isNumber }
+    }
+
+    static func cleanActionTitle(_ title: String) -> String {
+        let firstLine = title.split(whereSeparator: \.isNewline).first.map(String.init) ?? title
+        let value = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "执行 Mac 操作" : String(value.prefix(28))
     }
 
     func cancelCurrentWork() {

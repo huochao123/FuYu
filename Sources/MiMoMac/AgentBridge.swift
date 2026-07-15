@@ -353,7 +353,8 @@ actor MiMoAssistantClient {
         let hasVerb = actionVerbs.contains(where: lower.contains)
         let hasTarget = macTargets.contains(where: lower.contains)
         let directRequest = lower.hasPrefix("帮我") || lower.hasPrefix("替我") || lower.hasPrefix("给我")
-        return hasVerb && (hasTarget || directRequest)
+        let directImperative = actionVerbs.contains(where: lower.hasPrefix)
+        return hasVerb && (hasTarget || directRequest || directImperative)
     }
 
     static func containsInternalToolMarkup(_ text: String) -> Bool {
