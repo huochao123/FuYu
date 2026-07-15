@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = AssistantPreferences()
     private var panelController: FloatingPanelController?
     private var statusItem: NSStatusItem?
+    private var assistantStatusItem: NSMenuItem?
     private var shortcutStatusItem: NSMenuItem?
     private var shortcutMonitor: GlobalShortcutMonitor?
     private var voiceService: VoiceService?
@@ -82,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
         installStatusItem()
+        state.$phase
+            .removeDuplicates()
+            .sink { [weak self] phase in self?.updateStatusItem(for: phase) }
+            .store(in: &cancellables)
         donateStartVoiceActivity()
 
         if let pendingDeepLink {
@@ -176,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let activity = NSUserActivity(activityType: "ai.fuyu.desktop.startVoice")
         activity.title = "开始说话"
         activity.isEligibleForSearch = true
-        activity.webpageURL = URL(string: "fuyu://listen")
+        activity.userInfo = ["action": "listen"]
         activity.becomeCurrent()
         voiceActivity = activity
     }
@@ -238,9 +243,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "浮屿")
+        item.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
+        let assistantStatus = NSMenuItem(title: "浮屿运行正常 · 待命", action: nil, keyEquivalent: "")
+        assistantStatus.isEnabled = false
+        menu.addItem(assistantStatus)
+        assistantStatusItem = assistantStatus
         let status = NSMenuItem(
             title: runtime?.isHermesAvailable == true ? "Hermes 已就绪" : "Hermes 未安装",
             action: nil,
@@ -265,6 +274,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "退出浮屿", action: #selector(quit), keyEquivalent: "q")
         item.menu = menu
         statusItem = item
+        updateStatusItem(for: state.phase)
+    }
+
+    private func updateStatusItem(for phase: AppState.Phase) {
+        guard let button = statusItem?.button else { return }
+        button.image = Self.makeFuYuStatusIcon(for: phase)
+        button.toolTip = "浮屿正在运行 · \(phase.rawValue)"
+        assistantStatusItem?.title = "浮屿运行正常 · \(phase.rawValue)"
+    }
+
+    private static func makeFuYuStatusIcon(for phase: AppState.Phase) -> NSImage {
+        let color: NSColor = switch phase {
+        case .idle: .labelColor
+        case .listening: .systemCyan
+        case .thinking: .systemPurple
+        case .executing, .answered: .systemGreen
+        case .speaking: .systemPink
+        case .error: .systemRed
+        }
+        let energy: [CGFloat] = switch phase {
+        case .idle: [0.28, 0.48, 0.68, 0.48, 0.28]
+        case .listening: [0.32, 0.78, 1.0, 0.7, 0.4]
+        case .thinking: [0.7, 0.34, 0.9, 0.42, 0.76]
+        case .executing: [0.42, 0.62, 0.82, 1.0, 0.72]
+        case .speaking: [0.72, 1.0, 0.54, 0.9, 0.38]
+        case .answered: [0.3, 0.46, 0.62, 0.46, 0.3]
+        case .error: [0.82, 0.3, 0.82, 0.3, 0.82]
+        }
+        let image = NSImage(size: NSSize(width: 19, height: 18), flipped: false) { _ in
+            color.setFill()
+            for (index, value) in energy.enumerated() {
+                let radius = 1.15 + value * 0.55
+                let x = 3.0 + CGFloat(index) * 3.25
+                let y = 9 + (value - 0.5) * 6 * (index.isMultiple(of: 2) ? 1 : -1)
+                NSBezierPath(ovalIn: NSRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)).fill()
+            }
+            let orbit = NSBezierPath()
+            orbit.appendArc(withCenter: NSPoint(x: 9.5, y: 9), radius: 8, startAngle: 205, endAngle: 338)
+            orbit.lineWidth = 0.7
+            color.withAlphaComponent(0.45).setStroke()
+            orbit.stroke()
+            return true
+        }
+        image.isTemplate = phase == .idle
+        image.accessibilityDescription = "浮屿 · \(phase.rawValue)"
+        return image
     }
 
     @objc private func showPanel() {

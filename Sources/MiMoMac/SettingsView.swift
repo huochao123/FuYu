@@ -1,12 +1,14 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "常规"
     case voice = "声音"
     case models = "模型"
     case memory = "记忆"
+    case persona = "人格"
     case advanced = "高级"
     var id: String { rawValue }
     var icon: String {
@@ -15,6 +17,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .voice: "waveform"
         case .models: "cpu"
         case .memory: "brain.head.profile"
+        case .persona: "person.crop.circle.badge.sparkles"
         case .advanced: "gearshape.2"
         }
     }
@@ -25,6 +28,8 @@ private final class SettingsViewState: ObservableObject {
     @Published var selection: SettingsSection = .general
     @Published var modelStatus = ""
     @Published var voiceStatus = ""
+    @Published var personaStatus = ""
+    @Published var tavernPreview: TavernImportPreview?
     @Published var isTesting = false
     @Published var showClearConfirmation = false
 }
@@ -72,6 +77,14 @@ struct SettingsView: View {
             }
         } message: {
             Text("当前会话和已保存到本机的长期记忆都会被删除。")
+        }
+        .sheet(item: $viewState.tavernPreview) { preview in
+            TavernImportPreviewSheet(
+                preview: preview,
+                onApplyCharacter: applyImportedCharacter,
+                onApplyPreset: applyImportedPreset,
+                onCancel: { viewState.tavernPreview = nil }
+            )
         }
     }
 
@@ -150,6 +163,7 @@ struct SettingsView: View {
         case .voice: "切换免费系统音色、MiMo 云端语音或本地克隆服务"
         case .models: "随时切换云端模型、本地模型或兼容服务"
         case .memory: "控制对话上下文和跨启动记忆的保存范围"
+        case .persona: "定义浮屿是谁，以及它用什么方式陪你说话"
         case .advanced: "调整自动提交、静默收起和语音交互节奏"
         }
     }
@@ -161,6 +175,7 @@ struct SettingsView: View {
         case .voice: voicePage
         case .models: modelsPage
         case .memory: memoryPage
+        case .persona: personaPage
         case .advanced: advancedPage
         }
     }
@@ -386,6 +401,185 @@ struct SettingsView: View {
         }
     }
 
+    private var personaPage: some View {
+        VStack(spacing: 14) {
+            settingsCard {
+                Toggle(isOn: $preferences.personaEnabled) {
+                    settingLabel("启用角色扮演", detail: "可以作为朋友、伴侣、家人、搭档或你创建的人物")
+                }
+                Divider()
+                settingRow("关系预设", detail: "预设只提供关系方向，下面的内容仍可完全修改") {
+                    Picker("", selection: $preferences.personaRelationship) {
+                        ForEach(PersonaRelationship.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 180)
+                }
+                .disabled(!preferences.personaEnabled)
+                Divider()
+                settingRow("角色名称", detail: "留空时由对话和人物背景自然决定") {
+                    TextField("例如：小屿", text: $preferences.personaName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                }
+                .disabled(!preferences.personaEnabled)
+            }
+
+            settingsCard {
+                personaEditor(
+                    "人物背景",
+                    hint: "年龄、身份、经历、世界观、与用户如何认识……",
+                    text: $preferences.personaBackground,
+                    height: 105
+                )
+                Divider()
+                personaEditor(
+                    "性格特点",
+                    hint: "例如：温柔、嘴硬心软、幽默、理性、会主动关心人",
+                    text: $preferences.personaTraits,
+                    height: 72
+                )
+                Divider()
+                personaEditor(
+                    "说话语气",
+                    hint: "例如：自然口语、短句、偶尔开玩笑、称呼我为……",
+                    text: $preferences.personaStyle,
+                    height: 72
+                )
+            }
+            .disabled(!preferences.personaEnabled)
+
+            settingsCard {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.purple.opacity(0.12))
+                        Image(systemName: "person.text.rectangle.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.purple)
+                    }
+                    .frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("SillyTavern / AI 酒馆兼容")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        Text("导入前先预览识别结果，可选择替换或合并，不会直接覆盖当前人物。")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("本机解析")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color.green.opacity(0.1), in: Capsule())
+                }
+                Divider()
+                HStack(spacing: 9) {
+                    Button { importTavernCharacter() } label: {
+                        Label("角色卡", systemImage: "person.crop.square")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button { importTavernPreset() } label: {
+                        Label("提示词预设", systemImage: "text.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                }
+                Text("支持 Character Card V1/V2 JSON、带嵌入数据的 PNG，以及常见 Chat Completion 预设 JSON。")
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                if !viewState.personaStatus.isEmpty {
+                    Text(viewState.personaStatus)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Text("人物内容由你定义；Mac 操作是否确认由高级设置决定。未实际执行的操作不会被描述为已完成。")
+                .font(.system(size: 10, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func personaEditor(
+        _ title: String,
+        hint: String,
+        text: Binding<String>,
+        height: CGFloat
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 12, weight: .semibold, design: .rounded))
+            TextEditor(text: text)
+                .font(.system(size: 11, design: .rounded))
+                .scrollContentBackground(.hidden)
+                .padding(7)
+                .frame(height: height)
+                .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            Text(hint).font(.system(size: 9, design: .rounded)).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func importTavernCharacter() {
+        let panel = NSOpenPanel()
+        panel.title = "导入酒馆角色卡"
+        panel.allowedContentTypes = [.json, .png]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let imported = try TavernImportService.importCharacter(from: url)
+            viewState.tavernPreview = .character(imported)
+        } catch {
+            viewState.personaStatus = "导入失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func importTavernPreset() {
+        let panel = NSOpenPanel()
+        panel.title = "导入酒馆提示词预设"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            viewState.tavernPreview = .preset(try TavernImportService.previewPreset(from: url))
+        } catch {
+            viewState.personaStatus = "导入失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func applyImportedCharacter(_ imported: ImportedTavernPersona, merge: Bool) {
+        preferences.personaEnabled = true
+        preferences.personaRelationship = .custom
+        if !imported.name.isEmpty { preferences.personaName = imported.name }
+        if merge {
+            preferences.personaBackground = mergedText(preferences.personaBackground, imported.background)
+            preferences.personaTraits = mergedText(preferences.personaTraits, imported.traits)
+            preferences.personaStyle = mergedText(preferences.personaStyle, imported.style)
+        } else {
+            preferences.personaBackground = imported.background
+            preferences.personaTraits = imported.traits
+            preferences.personaStyle = imported.style
+        }
+        viewState.personaStatus = "已应用角色卡：\(imported.displayName) · \(imported.fields.count) 个字段"
+        viewState.tavernPreview = nil
+    }
+
+    private func applyImportedPreset(_ imported: ImportedTavernPreset, append: Bool) {
+        preferences.customPrompt = append
+            ? mergedText(preferences.customPrompt, imported.composedPrompt)
+            : imported.composedPrompt
+        viewState.personaStatus = "已应用预设：\(imported.name) · \(imported.sections.count) 个提示词段落"
+        viewState.tavernPreview = nil
+    }
+
+    private func mergedText(_ current: String, _ imported: String) -> String {
+        let old = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let new = imported.trimmingCharacters(in: .whitespacesAndNewlines)
+        if old.isEmpty { return new }
+        if new.isEmpty || old.contains(new) { return old }
+        return old + "\n\n" + new
+    }
+
     private var memoryPage: some View {
         VStack(spacing: 14) {
             settingsCard {
@@ -526,6 +720,202 @@ struct SettingsView: View {
                 viewState.modelStatus = "连接失败：\(error.localizedDescription)"
             }
             viewState.isTesting = false
+        }
+    }
+}
+
+private struct TavernImportPreviewSheet: View {
+    let preview: TavernImportPreview
+    let onApplyCharacter: (ImportedTavernPersona, Bool) -> Void
+    let onApplyPreset: (ImportedTavernPreset, Bool) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().opacity(0.6)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch preview {
+                    case let .character(character): characterPreview(character)
+                    case let .preset(preset): presetPreview(preset)
+                    }
+                }
+                .padding(22)
+            }
+            Divider().opacity(0.6)
+            footer
+        }
+        .frame(width: 620, height: 540)
+        .background(
+            LinearGradient(
+                colors: [Color(NSColor.windowBackgroundColor), Color.purple.opacity(0.025)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
+    private var header: some View {
+        HStack(spacing: 13) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(Color.purple.opacity(0.13))
+                Image(systemName: previewIcon)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(.purple)
+            }
+            .frame(width: 46, height: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(previewTitle)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                Text("检查识别结果，确认后才会修改浮屿设置")
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Label("仅在本机读取", systemImage: "lock.fill")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.green)
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(Color.green.opacity(0.1), in: Capsule())
+        }
+        .padding(18)
+    }
+
+    @ViewBuilder
+    private func characterPreview(_ character: ImportedTavernPersona) -> some View {
+        HStack(spacing: 14) {
+            if character.sourceURL.pathExtension.lowercased() == "png",
+               let image = NSImage(contentsOf: character.sourceURL) {
+                Image(nsImage: image)
+                    .resizable().scaledToFill()
+                    .frame(width: 76, height: 76)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.16)) }
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16).fill(Color.purple.opacity(0.1))
+                    Image(systemName: "person.crop.square.fill").font(.system(size: 30)).foregroundStyle(.purple)
+                }
+                .frame(width: 76, height: 76)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(character.displayName)
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                Text(character.format)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.purple)
+                Text("识别到 \(character.fields.count) 个可用字段")
+                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+
+        previewFields(character.fields)
+
+        if !character.warnings.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("兼容性提示", systemImage: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.orange)
+                ForEach(character.warnings, id: \.self) { warning in
+                    Text("• \(warning)")
+                        .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(13)
+            .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        }
+
+        Label("应用时可选择替换当前角色，或保留当前设定并合并不重复内容。", systemImage: "arrow.triangle.merge")
+            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func presetPreview(_ preset: ImportedTavernPreset) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(preset.name)
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                Text("Chat Completion 提示词预设")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.purple)
+                Text("识别到 \(preset.sections.count) 个提示词段落 · 共 \(preset.composedPrompt.count) 个字符")
+                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+
+        previewFields(preset.sections)
+
+        Text("应用时可选择替换或追加到“常规 → 自定义偏好”；不会修改模型地址、密钥或 Mac 操作权限。")
+            .font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+    }
+
+    private func previewFields(_ fields: [TavernImportField]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(fields) { field in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(field.title)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Spacer()
+                        Text("\(field.text.count) 字")
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+                    Text(field.text)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("取消", action: onCancel).keyboardShortcut(.cancelAction)
+            Spacer()
+            switch preview {
+            case let .character(character):
+                Button("合并到当前角色") {
+                    onApplyCharacter(character, true)
+                }
+                .buttonStyle(.bordered)
+                Button("替换并启用") {
+                    onApplyCharacter(character, false)
+                }
+                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            case let .preset(preset):
+                Button("追加到现有偏好") {
+                    onApplyPreset(preset, true)
+                }
+                .buttonStyle(.bordered)
+                Button("替换并应用") {
+                    onApplyPreset(preset, false)
+                }
+                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+    }
+
+    private var previewTitle: String {
+        switch preview {
+        case .character: "预览角色卡"
+        case .preset: "预览提示词预设"
+        }
+    }
+
+    private var previewIcon: String {
+        switch preview {
+        case .character: "person.crop.square.fill"
+        case .preset: "text.badge.checkmark"
         }
     }
 }

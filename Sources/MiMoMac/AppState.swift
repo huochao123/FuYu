@@ -9,6 +9,7 @@ final class AppState: ObservableObject {
         case response
         case task
         case approval
+        case history
     }
 
     enum Phase: String, Equatable {
@@ -36,6 +37,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    struct ConversationItem: Identifiable, Equatable {
+        enum Kind: Equatable { case user, assistant, action, error }
+        let id = UUID()
+        let kind: Kind
+        let text: String
+        let createdAt = Date()
+    }
+
     @Published var isExpanded = false
     @Published var phase: Phase = .idle
     @Published var transcript = "需要我做什么？"
@@ -47,6 +56,8 @@ final class AppState: ObservableObject {
     @Published var approvalDetail = "执行前会再次确认，不会在后台静默操作。"
     @Published private(set) var approvalID: UUID?
     @Published var steps: [TaskStep] = []
+    @Published var conversation: [ConversationItem] = []
+    @Published var showHistory = false
 
     var onVoiceRequested: (() -> Void)?
     var onVoiceSubmitRequested: (() -> Void)?
@@ -74,6 +85,7 @@ final class AppState: ObservableObject {
         guard isExpanded else { return .orb }
         if showPermission { return .approval }
         if phase == .executing { return .task }
+        if showHistory { return .history }
         if phase == .answered { return .voice }
         return .voice
     }
@@ -112,6 +124,7 @@ final class AppState: ObservableObject {
         transcript = userText
         progress = 0
         steps = []
+        appendConversation(.user, userText)
     }
 
     @discardableResult
@@ -123,6 +136,7 @@ final class AppState: ObservableObject {
         showPermission = true
         isExpanded = true
         phase = .thinking
+        appendConversation(.action, "等待确认：\(title)\n\(detail)")
         return id
     }
 
@@ -137,6 +151,7 @@ final class AppState: ObservableObject {
             .init(title: "执行操作", detail: "按照已批准的指令操作", status: .pending),
             .init(title: "检查结果", detail: "确认操作是否完成", status: .pending)
         ]
+        appendConversation(.action, "正在执行：\(title)")
     }
 
     func updateExecution(progress newProgress: Double, step index: Int) {
@@ -156,6 +171,7 @@ final class AppState: ObservableObject {
         transcript = text
         progress = steps.isEmpty ? 0 : 1
         for index in steps.indices { steps[index].status = .complete }
+        appendConversation(.assistant, text)
     }
 
     func finishSpeaking() {
@@ -176,6 +192,7 @@ final class AppState: ObservableObject {
         transcript = text
         progress = steps.isEmpty ? 0 : 1
         for index in steps.indices { steps[index].status = .complete }
+        appendConversation(.assistant, text)
 
         replyCollapseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(12))
@@ -191,6 +208,7 @@ final class AppState: ObservableObject {
         phase = .error
         transcript = message
         progress = 0
+        appendConversation(.error, message)
         errorDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(4))
             guard let self, !Task.isCancelled, self.phase == .error else { return }
@@ -232,7 +250,32 @@ final class AppState: ObservableObject {
         progress = 0
         transcript = message
         steps = []
+        showHistory = false
         isExpanded = false
+    }
+
+    func openHistory() {
+        showHistory = true
+        isExpanded = true
+    }
+
+    func closeHistory() {
+        showHistory = false
+        if phase == .idle || phase == .answered || phase == .error {
+            resetToIdle()
+        }
+    }
+
+    func recordActionStatus(_ text: String, failed: Bool = false) {
+        appendConversation(failed ? .error : .action, text)
+    }
+
+    private func appendConversation(_ kind: ConversationItem.Kind, _ text: String) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        if conversation.last?.kind == kind, conversation.last?.text == value { return }
+        conversation.append(.init(kind: kind, text: value))
+        conversation = Array(conversation.suffix(40))
     }
 
     func runDemo() {

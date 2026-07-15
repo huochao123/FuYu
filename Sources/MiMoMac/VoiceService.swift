@@ -3,6 +3,7 @@ import Speech
 
 @MainActor
 final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
+    static let maxRecognitionRecoveryAttempts = 2
     var onTranscriptReady: ((String) -> Void)?
 
     private let state: AppState
@@ -23,6 +24,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var tapInstalled = false
     private var recordingFile: AVAudioFile?
     private var recordingURL: URL?
+    private var recoveryTask: Task<Void, Never>?
+    private var recognitionRecoveryAttempts = 0
 
     init(state: AppState, preferences: AssistantPreferences) {
         self.state = state
@@ -54,6 +57,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func startListening() async {
+        recognitionRecoveryAttempts = 0
+        await beginListening()
+    }
+
+    private func beginListening() async {
         guard !isListening else { return }
         cancelSpeech()
         submissionTask?.cancel()
@@ -109,7 +117,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             scheduleInitialSilenceTimeout()
         } catch {
             stopRecognitionResources()
-            state.presentError("无法启动麦克风：\(error.localizedDescription)")
+            recoverRecognition(after: "无法启动麦克风：\(error.localizedDescription)")
         }
     }
 
@@ -186,6 +194,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         silenceTask = nil
         continuousTask?.cancel()
         continuousTask = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recognitionRecoveryAttempts = 0
         stopRecognitionResources()
         cleanupRecording()
         cancelSpeech()
@@ -411,9 +422,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                     service.scheduleAutomaticSubmission(for: transcript)
                 }
                 if let errorDescription, service.isListening {
-                    service.stopRecognitionResources()
-                    service.cleanupRecording()
-                    service.state.presentError("语音识别中断：\(errorDescription)")
+                    service.handleRecognitionInterruption(errorDescription)
                 }
             }
         }
@@ -444,6 +453,46 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recognitionRequest = nil
         recordingFile = nil
         isListening = false
+        audioEngine.reset()
+    }
+
+    private func handleRecognitionInterruption(_ description: String) {
+        let captured = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        stopRecognitionResources()
+        cleanupRecording()
+        if !captured.isEmpty {
+            state.updateTranscript(captured)
+            onTranscriptReady?(captured)
+            return
+        }
+        recoverRecognition(after: "语音识别中断：\(description)")
+    }
+
+    private func recoverRecognition(after message: String) {
+        guard Self.shouldAttemptRecognitionRecovery(
+            attempts: recognitionRecoveryAttempts,
+            hasCapturedText: !latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ) else {
+            recoveryTask?.cancel()
+            recoveryTask = nil
+            state.presentError("\(message)；自动恢复失败，请再次唤醒。")
+            return
+        }
+        recognitionRecoveryAttempts += 1
+        state.beginListening()
+        state.updateTranscript("语音连接恢复中…")
+        recoveryTask?.cancel()
+        let delay = 420 * recognitionRecoveryAttempts
+        recoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.audioEngine.reset()
+            await self.beginListening()
+        }
+    }
+
+    static func shouldAttemptRecognitionRecovery(attempts: Int, hasCapturedText: Bool) -> Bool {
+        !hasCapturedText && attempts < maxRecognitionRecoveryAttempts
     }
 
     private func prepareRecording(format: AVAudioFormat) {

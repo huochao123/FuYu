@@ -52,12 +52,14 @@ actor MiMoAssistantClient {
         你是 macOS 语音助手“浮屿”的规划器。使用自然、有温度但不啰嗦的中文。
         回答长度偏好：\(profile.answerLength.prompt)
         用户个性化偏好：\(profile.customPrompt.isEmpty ? "无" : profile.customPrompt)
-        个性化偏好不能覆盖操作确认、安全边界、真实性和 JSON 格式要求。
+        人格与关系设定：\(profile.personaPrompt)
         你必须只输出一个 JSON 对象，不要使用 Markdown。
         如果用户只是询问、聊天或需要解释，输出：
-        {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句短话，最多32字；链接、代码、列表、长解释或无需播报时留空"}
+        {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句自然短话，最多40字；除纯代码或纯链接外必须填写"}
         如果用户明确要求操作这台 Mac、应用或文件，禁止直接执行，输出：
         {"kind":"action","title":"短标题","detail":"将做什么以及主要风险，最多45字","hermesPrompt":"给 Hermes 的完整、明确、最小权限执行指令"}
+        普通 reply 禁止使用“我现在帮你打开、正在执行、马上替你完成”等会让用户误以为操作已发生的话术。
+        没有真实工具结果时，禁止声称 Mac 操作已经完成。
         删除、发送、购买、发布、修改系统安全设置等高风险操作必须准确说明风险。
         不要把“怎么做”之类的知识问题误判成操作。
         """
@@ -68,7 +70,8 @@ actor MiMoAssistantClient {
             profile: profile,
             includeContext: true
         )
-        let decision = try Self.parseDecision(content)
+        let parsedDecision = try Self.parseDecision(content)
+        let decision = Self.reconcileDecision(parsedDecision, userText: userText)
         if profile.contextEnabled {
             memory.append(.init(role: "user", content: userText))
             let assistantText: String
@@ -81,6 +84,14 @@ actor MiMoAssistantClient {
             if profile.persistentMemory { try persistMemory() }
         }
         return decision
+    }
+
+    func recordActionResult(title: String, result: String, succeeded: Bool, profile: AssistantProfile) throws {
+        guard profile.contextEnabled else { return }
+        let prefix = succeeded ? "实际执行成功" : "实际执行失败"
+        memory.append(.init(role: "assistant", content: "\(prefix)：\(title)。\(result)"))
+        memory = Array(memory.suffix(max(profile.contextTurns * 2, 4)))
+        if profile.persistentMemory { try persistMemory() }
     }
 
     func testConnection(profile: AssistantProfile) async throws -> String {
@@ -134,7 +145,7 @@ actor MiMoAssistantClient {
                     maxTokens: 1200,
                     system: systemPrompt,
                     messages: recentContext + [.init(role: "user", content: userText)],
-                    temperature: 0.2
+                    temperature: 0.34
                 )
             )
         } else {
@@ -145,7 +156,7 @@ actor MiMoAssistantClient {
                     messages: [.init(role: "system", content: systemPrompt)]
                         + recentContext
                         + [.init(role: "user", content: userText)],
-                    temperature: 0.2
+                    temperature: 0.34
                 )
             )
         }
@@ -198,6 +209,37 @@ actor MiMoAssistantClient {
             }
             return .reply(text: reply, spoken: wire.spokenReply?.nonEmpty)
         }
+    }
+
+    static func reconcileDecision(_ decision: AssistantDecision, userText: String) -> AssistantDecision {
+        guard case .reply = decision, looksLikeMacAction(userText) else { return decision }
+        let compact = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = String(compact.prefix(22))
+        return .action(
+            title: title.isEmpty ? "执行 Mac 操作" : title,
+            detail: "浮屿识别到这是 Mac 操作，将在执行前确认。",
+            hermesPrompt: compact
+        )
+    }
+
+    static func looksLikeMacAction(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let knowledgePrefixes = ["怎么", "如何", "为什么", "是什么", "能不能介绍", "告诉我怎么", "教我"]
+        if knowledgePrefixes.contains(where: value.hasPrefix) { return false }
+        let actionVerbs = [
+            "打开", "关闭", "启动", "退出", "创建", "新建", "删除", "移动", "复制", "重命名",
+            "整理", "发送", "点击", "切换", "设置", "调高", "调低", "搜索", "下载", "安装", "卸载"
+        ]
+        let macTargets = [
+            "文件", "文件夹", "访达", "finder", "safari", "浏览器", "应用", "软件", "桌面",
+            "系统", "音量", "亮度", "窗口", "mac", "电脑", "程序", "微信", "邮件", "日历"
+        ]
+        let lower = value.lowercased()
+        let hasVerb = actionVerbs.contains(where: lower.contains)
+        let hasTarget = macTargets.contains(where: lower.contains)
+        let directRequest = lower.hasPrefix("帮我") || lower.hasPrefix("替我") || lower.hasPrefix("给我")
+        return hasVerb && (hasTarget || directRequest)
     }
 
     private static func errorMessage(from data: Data) -> String {

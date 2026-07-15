@@ -37,6 +37,8 @@ enum SelfTestRunner {
 
         state.presentSilentReply("完整文字只显示，不播报")
         check(state.phase == .answered && state.overlayMode == .voice, "静默回复使用气泡保持可读")
+        state.openHistory()
+        check(state.overlayMode == .history && !state.conversation.isEmpty, "聊天与执行记录面板")
         state.resetToIdle()
 
         let suiteName = "ai.fuyu.selftest.\(UUID().uuidString)"
@@ -51,6 +53,13 @@ enum SelfTestRunner {
             preferences.spokenText(fullText: "详情见 https://example.com", suggested: nil) == nil,
             "智能播报过滤链接"
         )
+        check(
+            preferences.spokenText(
+                fullText: "这是一个比较长的回答，里面包含很多补充说明，用来验证智能播报不会再完全跳过，而是至少读出一句简短结论。后面还有更多内容。",
+                suggested: nil
+            )?.isEmpty == false,
+            "长回复至少生成一句播报"
+        )
         check(ModelProvider.allCases.count == 10, "主流模型服务预设")
         check(SpeechEngine.allCases.count == 4 && MiMoVoice.allCases.count == 8, "语音引擎与 MiMo 音色预设")
         check(RecognitionEngine.allCases.count == 3, "本地、自动与混合语音识别预设")
@@ -58,6 +67,14 @@ enum SelfTestRunner {
         check(FloatingPlacement.allCases.count == 3 && preferences.floatingPlacement == .notch, "刘海下方默认位置")
         check(!preferences.showDockIcon, "程序坞图标默认保持关闭")
         check(preferences.requireActionApproval, "Mac 操作确认默认开启")
+        preferences.personaEnabled = true
+        preferences.personaRelationship = .partner
+        preferences.personaName = "小屿"
+        check(
+            preferences.profile.personaPrompt.contains("小屿")
+                && preferences.profile.personaPrompt.contains("伴侣"),
+            "自定义人格与关系设定"
+        )
         check(PushToTalkShortcut.allCases.count == 6 && preferences.pushToTalkShortcut == .fnHold, "Fn 与可修改快捷键预设")
         var shortcutPresses = 0
         var shortcutReleases = 0
@@ -85,6 +102,13 @@ enum SelfTestRunner {
                 && VoiceService.automaticSubmissionDelayMilliseconds(for: "你好", baseSeconds: 2.3) == 2_650,
             "停顿提交会给短句和未完句留出时间"
         )
+        check(
+            VoiceService.shouldAttemptRecognitionRecovery(attempts: 0, hasCapturedText: false)
+                && VoiceService.shouldAttemptRecognitionRecovery(attempts: 1, hasCapturedText: false)
+                && !VoiceService.shouldAttemptRecognitionRecovery(attempts: 2, hasCapturedText: false)
+                && !VoiceService.shouldAttemptRecognitionRecovery(attempts: 0, hasCapturedText: true),
+            "语音中断有限重连并优先保留已识别文字"
+        )
         preferences.modelProvider = .ollama
         check(
             preferences.profile.model.endpoint.contains("127.0.0.1")
@@ -106,6 +130,69 @@ enum SelfTestRunner {
             check(
                 action == .action(title: "打开访达", detail: "只打开访达", hermesPrompt: "打开 Finder"),
                 "Mac 操作规划解析"
+            )
+            let corrected = MiMoAssistantClient.reconcileDecision(
+                .reply(text: "好的，我来帮你打开。", spoken: "马上为你打开"),
+                userText: "帮我打开 Safari"
+            )
+            if case .action = corrected {
+                check(true, "Mac 操作意图二次校验")
+            } else {
+                check(false, "Mac 操作意图二次校验")
+            }
+
+            let cardURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-card-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: cardURL) }
+            try Data(#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"小雪","description":"来自未来城市","personality":"温柔、聪明","scenario":"与用户合租","first_mes":"欢迎回家"}}"#.utf8)
+                .write(to: cardURL)
+            let imported = try TavernImportService.importCharacter(from: cardURL)
+            check(
+                imported.name == "小雪"
+                    && imported.background.contains("未来城市")
+                    && imported.style.contains("欢迎回家")
+                    && imported.fields.count == 5
+                    && imported.format.contains("V2"),
+                "SillyTavern V2 角色卡导入"
+            )
+
+            let v1URL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-card-v1-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: v1URL) }
+            try Data(#"{"name":"阿岚","description":"旅行摄影师","personality":"开朗","mes_example":"{{char}}: 今天去哪里？"}"#.utf8)
+                .write(to: v1URL)
+            let importedV1 = try TavernImportService.importCharacter(from: v1URL)
+            check(importedV1.name == "阿岚" && importedV1.format.contains("V1"), "SillyTavern V1 JSON 导入")
+
+            let pngURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-card-png-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: pngURL) }
+            let embeddedJSON = Data(#"{"spec":"chara_card_v2","data":{"name":"青禾","description":"图像内嵌角色"}}"#.utf8)
+            let textPayload = Data("chara\0".utf8) + Data(embeddedJSON.base64EncodedString().utf8)
+            var png = Data([137, 80, 78, 71, 13, 10, 26, 10])
+            let length = UInt32(textPayload.count).bigEndian
+            withUnsafeBytes(of: length) { png.append(contentsOf: $0) }
+            png.append(Data("tEXt".utf8))
+            png.append(textPayload)
+            png.append(Data(repeating: 0, count: 4))
+            try png.write(to: pngURL)
+            let importedPNG = try TavernImportService.importCharacter(from: pngURL)
+            check(
+                importedPNG.name == "青禾" && importedPNG.format.contains("PNG"),
+                "SillyTavern PNG 内嵌角色卡导入"
+            )
+
+            let presetURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-preset-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: presetURL) }
+            try Data(#"{"main_prompt":"保持沉浸式对话","post_history_instructions":"延续人物语气"}"#.utf8)
+                .write(to: presetURL)
+            let presetPreview = try TavernImportService.previewPreset(from: presetURL)
+            check(
+                presetPreview.sections.count == 2
+                    && presetPreview.composedPrompt.contains("保持沉浸式对话")
+                    && presetPreview.composedPrompt.contains("历史后置提示"),
+                "SillyTavern 提示词预设解析与预览"
             )
         } catch {
             failures.append("模型规划解析：\(error.localizedDescription)")

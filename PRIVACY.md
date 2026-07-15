@@ -8,6 +8,8 @@
 
 Hermes / CUA 操作前确认默认开启。用户可以在高级设置中关闭，但这会允许模型规划的操作直接执行。
 
+导入的 SillyTavern 角色卡与提示词预设在本机解析并保存为浮屿偏好，导入本身不会上传文件。使用云端模型聊天时，已启用的人格和提示词会作为对话上下文发送给用户选择的模型服务商。
+
 ## English
 
 FuYu includes no advertising, user tracking, or telemetry. Settings, API credentials, and optional conversation memory remain on the user's Mac and are not part of the source repository.
@@ -15,3 +17,5 @@ FuYu includes no advertising, user tracking, or telemetry. Settings, API credent
 When the user enables a cloud feature, only the data required for that request is sent to the selected provider: conversation text for cloud models, text for cloud TTS, and current-turn audio for MiMo hybrid recognition. FuYu does not retain raw recordings as long-term memory.
 
 Approval before Hermes / CUA actions is enabled by default. Users may disable it in Advanced Settings, which allows model-planned actions to execute directly.
+
+Imported SillyTavern character cards and prompt presets are parsed locally and stored as FuYu preferences; importing a file does not upload it. When a cloud model is used for chat, the enabled persona and prompt text are included in the context sent to the provider selected by the user.

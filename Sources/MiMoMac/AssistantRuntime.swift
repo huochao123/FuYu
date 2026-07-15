@@ -79,6 +79,18 @@ final class AssistantRuntime {
                     self.pendingAction = nil
                     self.deliverReply(text, suggestedSpoken: spoken)
                 case let .action(title, detail, prompt):
+                    guard self.hermes.isAvailable else {
+                        let message = AssistantServiceError.hermesUnavailable.localizedDescription
+                        self.state.recordActionStatus("未执行：\(title)\n\(message)", failed: true)
+                        try? await self.modelClient.recordActionResult(
+                            title: title,
+                            result: message,
+                            succeeded: false,
+                            profile: self.preferences.profile
+                        )
+                        self.state.presentError(message)
+                        return
+                    }
                     if self.preferences.requireActionApproval {
                         let approvalID = self.state.presentApproval(title: title, detail: detail)
                         self.pendingAction = PendingAction(
@@ -141,13 +153,28 @@ final class AssistantRuntime {
                 self.state.updateExecution(progress: 0.94, step: 2)
                 try? await Task.sleep(for: .milliseconds(220))
                 try Task.checkCancellation()
+                self.state.recordActionStatus("执行成功：\(action.title)\n\(result)")
+                try? await self.modelClient.recordActionResult(
+                    title: action.title,
+                    result: result,
+                    succeeded: true,
+                    profile: self.preferences.profile
+                )
                 self.deliverReply(result, suggestedSpoken: nil)
             } catch is CancellationError {
                 return
             } catch AssistantServiceError.cancelled {
                 return
             } catch {
-                self.state.presentError(error.localizedDescription)
+                let message = error.localizedDescription
+                self.state.recordActionStatus("执行失败：\(action.title)\n\(message)", failed: true)
+                try? await self.modelClient.recordActionResult(
+                    title: action.title,
+                    result: message,
+                    succeeded: false,
+                    profile: self.preferences.profile
+                )
+                self.state.presentError(message)
             }
         }
     }

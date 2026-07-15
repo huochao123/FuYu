@@ -141,29 +141,27 @@ struct OrbParticleField: View {
 
 struct AuroraFlowField: View {
     let color: Color
+    var time: TimeInterval = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            Canvas { context, size in
-                let time = timeline.date.timeIntervalSinceReferenceDate
-                for band in 0..<3 {
-                    var path = Path()
-                    let baseline = size.height * (0.34 + CGFloat(band) * 0.16)
-                    for step in 0...30 {
-                        let progress = CGFloat(step) / 30
-                        let x = progress * size.width
-                        let phase = time * (1.8 + Double(band) * 0.22) + Double(progress) * 7.4 + Double(band)
-                        let y = baseline + CGFloat(sin(phase)) * (3.2 + CGFloat(band))
-                        if step == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
-                    }
-                    let tint: Color = band == 0 ? .cyan : (band == 1 ? color : Color(red: 0.9, green: 0.35, blue: 0.82))
-                    context.stroke(
-                        path,
-                        with: .color(tint.opacity(0.54 + Double(band) * 0.12)),
-                        style: StrokeStyle(lineWidth: 1.6, lineCap: .round)
-                    )
+        Canvas { context, size in
+            for band in 0..<3 {
+                var path = Path()
+                let baseline = size.height * (0.34 + CGFloat(band) * 0.16)
+                for step in 0...30 {
+                    let progress = CGFloat(step) / 30
+                    let x = progress * size.width
+                    let phase = time * (1.8 + Double(band) * 0.22) + Double(progress) * 7.4 + Double(band)
+                    let y = baseline + CGFloat(sin(phase)) * (3.2 + CGFloat(band))
+                    if step == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
                 }
+                let tint: Color = band == 0 ? .cyan : (band == 1 ? color : Color(red: 0.9, green: 0.35, blue: 0.82))
+                context.stroke(
+                    path,
+                    with: .color(tint.opacity(0.54 + Double(band) * 0.12)),
+                    style: StrokeStyle(lineWidth: 1.6, lineCap: .round)
+                )
             }
         }
         .drawingGroup()

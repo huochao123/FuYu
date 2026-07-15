@@ -35,14 +35,23 @@ All images below are captured from the current build. They are not concept rende
 - **原生悬浮交互**：默认位于刘海下方；空闲隐藏，唤醒后出现，不遮挡正常工作。
 - **六款真实皮肤**：粒子声场、无框点波、经典圆球、极光流体、星轨共振和晶格脉冲。
 - **状态动画**：聆听、思考、播报、完成与错误状态具有不同粒子动效。
+- **菜单栏运行指示**：专属点阵图标会随待命、聆听、思考、执行、说话与异常改变颜色和形态，菜单内同时显示当前状态。
 - **气泡式字幕**：你说的话与 AI 回复直接显示在悬浮图标旁，不使用传统聊天窗口。
+- **可追溯聊天记录**：从气泡进入本轮记录，查看用户输入、AI 回复以及 Mac 操作的执行中、成功或失败状态。
 - **多种唤醒方式**：支持长按 Fn / 地球键、可修改的组合键、菜单栏，以及 `fuyu://listen` Siri 快捷指令。
 - **多模型支持**：内置 MiMo、OpenAI、Claude、Gemini、DeepSeek、通义千问、Kimi、智谱 GLM、Ollama / LM Studio 与自定义兼容服务。
 - **可切换语音识别**：Apple 本地、Apple 自动，以及 Apple 实时字幕 + MiMo ASR 最终校正的混合模式。
-- **自然语音回复**：支持 macOS 离线声音、MiMo 云端音色、OpenAI TTS，并预留本地声音克隆接口。
+- **语音中断恢复**：识别服务或麦克风链路意外失效时会重建录音资源并有限次数自动重连；已有识别文字会优先保留。
+- **可靠的自然语音回复**：支持 macOS 离线声音、MiMo 云端音色、OpenAI TTS；智能模式会把长回答压成一句可朗读结论，避免出现文字有回复但声音直接跳过。
 - **上下文与本地记忆**：可调整上下文轮数；跨启动记忆默认关闭，开启后仅保存在本机。
-- **Mac 操作能力**：可通过 Hermes / CUA 执行自然语言操作；操作前确认默认开启，也可由用户在高级设置中关闭。
+- **人格与关系设定**：可自定义角色名称、背景、性格、说话方式，以及朋友、伴侣、家人、同事等关系方向。
+- **SillyTavern 兼容导入**：支持 Character Card V1/V2 JSON、常见 PNG 内嵌角色卡和 Chat Completion 提示词预设 JSON；导入前可预览字段、兼容性提示，并选择替换或合并。
+- **更可靠的 Mac 操作**：操作意图会二次校验，避免模型只说“马上执行”却没有调用工具；Hermes 的真实成功或失败结果会写回上下文，方便继续追问“刚才完成了吗”。操作前确认默认开启，也可由用户在高级设置中关闭。
 - **隐私可控**：不包含遥测或广告；模型密钥、偏好和记忆不写入源码仓库。
+
+角色卡和预设文件仅在本机解析。当前版本不会导入角色知识库、世界书、群聊、脚本或扩展；检测到角色知识库时会在预览中明确提示。兼容范围参考 [SillyTavern 文档](https://docs.sillytavern.app/usage/characters/) 与 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2)。
+
+浮屿正在从“单轮语音指令”继续向可验证的智能体演进。已实现能力与后续计划见 [ROADMAP.md](ROADMAP.md)。
 
 ### 系统要求
 
@@ -112,14 +121,23 @@ FuYu is a lightweight native voice assistant for macOS. It stays completely hidd
 - **Native floating experience** — sits below the notch by default and disappears when idle.
 - **Six live skins** — Particle Field, Bare Dot Wave, Classic Orb, Aurora Flow, Orbit Resonance, and Crystal Pulse.
 - **State-aware motion** — distinct particle animations for listening, thinking, speaking, completion, and errors.
+- **Menu-bar health indicator** — a distinctive dot-orbit icon changes with idle, listening, thinking, execution, speaking, and error states, with a readable status inside the menu.
 - **Speech-bubble captions** — live input and AI responses appear beside the assistant instead of inside a chat window.
+- **Visible session history** — open the current conversation trail from the bubble, including user input, assistant replies, and Mac-action progress, success, or failure.
 - **Flexible invocation** — hold Fn/Globe, choose another global shortcut, use the menu bar, or invoke `fuyu://listen` from Siri Shortcuts.
 - **Multiple model providers** — MiMo, OpenAI, Claude, Gemini, DeepSeek, Qwen, Kimi, GLM, Ollama / LM Studio, and custom compatible endpoints.
 - **Selectable speech recognition** — Apple on-device, Apple automatic, or Apple live captions with MiMo ASR final correction.
-- **Natural voice output** — macOS offline voices, MiMo cloud voices, OpenAI TTS, plus a reserved local voice-cloning endpoint.
+- **Recognition recovery** — rebuilds recording resources and retries a limited number of times after unexpected recognition or microphone interruptions while preserving captured text.
+- **Reliable natural voice output** — macOS offline voices, MiMo cloud voices, OpenAI TTS, plus a reserved local voice-cloning endpoint. Smart mode condenses long replies into a speakable sentence instead of silently skipping them.
 - **Context and local memory** — configurable context length; persistent memory is opt-in and stored locally.
-- **Mac actions** — Hermes / CUA integration with approval enabled by default and an advanced option to disable it.
+- **Personas and relationships** — customize the character name, background, personality, speaking style, and relationship direction.
+- **SillyTavern imports** — preview and import Character Card V1/V2 JSON, common embedded PNG cards, and Chat Completion prompt preset JSON; choose whether to replace or merge.
+- **More reliable Mac actions** — action intent is checked again before replying, and real Hermes success/failure results are written back into context so follow-up questions can use the actual outcome. Approval remains enabled by default and can be disabled in Advanced Settings.
 - **Privacy-conscious** — no telemetry or advertising; credentials, preferences, and memory are never part of the source repository.
+
+Character cards and presets are parsed locally. World books, group chats, scripts, and extension payloads are not imported in the current release; detected character books are called out in the preview. See the [SillyTavern documentation](https://docs.sillytavern.app/usage/characters/) and [Character Card V2 specification](https://github.com/malfoyslastname/character-card-spec-v2) for the source formats.
+
+FuYu is evolving from one-shot voice commands toward a verifiable agent loop. See [ROADMAP.md](ROADMAP.md) for the implemented baseline and planned stages.
 
 ### Requirements
 

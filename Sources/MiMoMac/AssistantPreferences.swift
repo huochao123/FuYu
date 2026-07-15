@@ -51,6 +51,21 @@ enum FloatingPlacement: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum PersonaRelationship: String, CaseIterable, Identifiable, Sendable {
+    case friend, partner, family, colleague, mentor, custom
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .friend: "亲密朋友"
+        case .partner: "伴侣"
+        case .family: "家人"
+        case .colleague: "工作搭档"
+        case .mentor: "导师"
+        case .custom: "自定义关系"
+        }
+    }
+}
+
 enum PushToTalkShortcut: String, CaseIterable, Identifiable, Sendable {
     case fnHold, optionSpace, optionShiftSpace, controlSpace, commandShiftSpace, off
     var id: String { rawValue }
@@ -222,6 +237,7 @@ struct AssistantProfile: Sendable {
     let contextEnabled: Bool
     let contextTurns: Int
     let persistentMemory: Bool
+    let personaPrompt: String
 }
 
 @MainActor
@@ -253,12 +269,18 @@ final class AssistantPreferences: ObservableObject {
         static let pushToTalkShortcut = "assistantPushToTalkShortcut"
         static let floatingPlacement = "assistantFloatingPlacement"
         static let requireActionApproval = "assistantRequireActionApproval"
+        static let personaEnabled = "assistantPersonaEnabled"
+        static let personaRelationship = "assistantPersonaRelationship"
+        static let personaName = "assistantPersonaName"
+        static let personaBackground = "assistantPersonaBackground"
+        static let personaTraits = "assistantPersonaTraits"
+        static let personaStyle = "assistantPersonaStyle"
     }
 
     @Published var voicePolicy: VoiceReplyPolicy { didSet { defaults.set(voicePolicy.rawValue, forKey: Key.voicePolicy) } }
     @Published var answerLength: AnswerLength { didSet { defaults.set(answerLength.rawValue, forKey: Key.answerLength) } }
     @Published var speechRate: Double { didSet { defaults.set(speechRate, forKey: Key.speechRate) } }
-    @Published var customPrompt: String { didSet { defaults.set(String(customPrompt.prefix(1200)), forKey: Key.customPrompt) } }
+    @Published var customPrompt: String { didSet { defaults.set(String(customPrompt.prefix(8000)), forKey: Key.customPrompt) } }
     @Published var modelProvider: ModelProvider {
         didSet {
             defaults.set(modelProvider.rawValue, forKey: Key.modelProvider)
@@ -290,6 +312,12 @@ final class AssistantPreferences: ObservableObject {
     @Published var pushToTalkShortcut: PushToTalkShortcut { didSet { defaults.set(pushToTalkShortcut.rawValue, forKey: Key.pushToTalkShortcut) } }
     @Published var floatingPlacement: FloatingPlacement { didSet { defaults.set(floatingPlacement.rawValue, forKey: Key.floatingPlacement) } }
     @Published var requireActionApproval: Bool { didSet { defaults.set(requireActionApproval, forKey: Key.requireActionApproval) } }
+    @Published var personaEnabled: Bool { didSet { defaults.set(personaEnabled, forKey: Key.personaEnabled) } }
+    @Published var personaRelationship: PersonaRelationship { didSet { defaults.set(personaRelationship.rawValue, forKey: Key.personaRelationship) } }
+    @Published var personaName: String { didSet { defaults.set(String(personaName.prefix(40)), forKey: Key.personaName) } }
+    @Published var personaBackground: String { didSet { defaults.set(String(personaBackground.prefix(4000)), forKey: Key.personaBackground) } }
+    @Published var personaTraits: String { didSet { defaults.set(String(personaTraits.prefix(1200)), forKey: Key.personaTraits) } }
+    @Published var personaStyle: String { didSet { defaults.set(String(personaStyle.prefix(2400)), forKey: Key.personaStyle) } }
     @Published var ttsAPIKeyDraft = ""
 
     private let defaults: UserDefaults
@@ -326,6 +354,12 @@ final class AssistantPreferences: ObservableObject {
         pushToTalkShortcut = PushToTalkShortcut(rawValue: defaults.string(forKey: Key.pushToTalkShortcut) ?? "fnHold") ?? .fnHold
         floatingPlacement = FloatingPlacement(rawValue: defaults.string(forKey: Key.floatingPlacement) ?? "notch") ?? .notch
         requireActionApproval = defaults.object(forKey: Key.requireActionApproval) as? Bool ?? true
+        personaEnabled = defaults.object(forKey: Key.personaEnabled) as? Bool ?? false
+        personaRelationship = PersonaRelationship(rawValue: defaults.string(forKey: Key.personaRelationship) ?? "friend") ?? .friend
+        personaName = defaults.string(forKey: Key.personaName) ?? ""
+        personaBackground = defaults.string(forKey: Key.personaBackground) ?? ""
+        personaTraits = defaults.string(forKey: Key.personaTraits) ?? "温柔、真诚、有幽默感，尊重边界"
+        personaStyle = defaults.string(forKey: Key.personaStyle) ?? "自然口语化，不说教，像真实的人一样回应"
         ready = true
         loadProviderFields()
     }
@@ -333,12 +367,27 @@ final class AssistantPreferences: ObservableObject {
     var profile: AssistantProfile {
         AssistantProfile(
             answerLength: answerLength,
-            customPrompt: String(customPrompt.prefix(1200)),
+            customPrompt: String(customPrompt.prefix(8000)),
             model: ModelRuntimeConfiguration(provider: modelProvider, model: modelName, endpoint: endpoint),
             contextEnabled: contextEnabled,
             contextTurns: Int(contextTurns.rounded()),
-            persistentMemory: persistentMemory
+            persistentMemory: persistentMemory,
+            personaPrompt: personaPrompt
         )
+    }
+
+    var personaPrompt: String {
+        guard personaEnabled else { return "未启用角色扮演，保持自然、可靠的 AI 助手身份。" }
+        return """
+        已启用角色扮演。
+        角色名称：\(personaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "由上下文自然决定" : personaName)
+        与用户关系：\(personaRelationship.title)
+        人物背景：\(personaBackground.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "无额外背景" : String(personaBackground.prefix(4000)))
+        性格特点：\(String(personaTraits.prefix(1200)))
+        说话方式、开场与示例：\(String(personaStyle.prefix(2400)))
+        保持角色连贯。人物背景、虚构经历、关系和表达方式以用户设定为准。
+        只有一个工具事实约束：没有收到真实执行结果时，不得声称已经完成 Mac 操作。
+        """
     }
 
     var hasStoredAPIKey: Bool {
@@ -383,8 +432,39 @@ final class AssistantPreferences: ObservableObject {
         case .smart:
             let candidate = suggested?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let candidate, !candidate.isEmpty, isSuitableForSpeech(candidate) { return candidate }
-            return isSuitableForSpeech(fullText) ? fullText : nil
+            if isSuitableForSpeech(fullText) { return fullText }
+            return smartSpeechSummary(fullText)
         }
+    }
+
+    private func smartSpeechSummary(_ text: String) -> String? {
+        let withoutCode = text.replacingOccurrences(
+            of: "```[\\s\\S]*?```",
+            with: " ",
+            options: .regularExpression
+        )
+        let withoutLinks = withoutCode.replacingOccurrences(
+            of: "https?://\\S+",
+            with: " ",
+            options: .regularExpression
+        )
+        let cleanedLines = withoutLinks
+            .split(whereSeparator: \.isNewline)
+            .map { line in
+                String(line)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "#*-•>|` "))
+            }
+            .filter { !$0.isEmpty }
+        guard !cleanedLines.isEmpty else { return nil }
+        let joined = cleanedLines.joined(separator: "，")
+        let firstSentence = joined.split(whereSeparator: { "。！？!?".contains($0) }).first.map(String.init) ?? joined
+        let value = firstSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if text.contains("http://") || text.contains("https://") {
+            let linkOnlyPhrases = ["详情见", "查看链接", "请看链接", "网址", "链接"]
+            if linkOnlyPhrases.contains(value) { return nil }
+        }
+        return value.count <= 44 ? value : String(value.prefix(42)) + "……"
     }
 
     private func modelKey(_ field: String) -> String { "assistantModel.\(modelProvider.rawValue).\(field)" }

@@ -17,7 +17,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         .voice: NSSize(width: 430, height: 82),
         .response: NSSize(width: 388, height: 182),
         .task: NSSize(width: 374, height: 166),
-        .approval: NSSize(width: 388, height: 174)
+        .approval: NSSize(width: 388, height: 174),
+        .history: NSSize(width: 430, height: 390)
     ]
 
     init(
@@ -139,6 +140,8 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         case .task:
             radius = 25
         case .approval:
+            radius = 26
+        case .history:
             radius = 26
         }
         panel.contentView?.wantsLayer = true

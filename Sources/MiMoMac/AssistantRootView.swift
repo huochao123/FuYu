@@ -39,6 +39,9 @@ struct AssistantRootView: View {
             case .approval:
                 ApprovalCard(state: state)
                     .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
+            case .history:
+                ConversationHistoryCard(state: state)
+                    .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -395,6 +398,18 @@ private struct ConversationBubble: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .background(FloatingGlass(cornerRadius: 21))
+
+                Button {
+                    state.openHistory()
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(.primary.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("查看聊天记录")
             }
         }
         .padding(.horizontal, 4)
@@ -417,6 +432,91 @@ private struct ConversationBubble: View {
         case .speaking: "插话"
         case .idle, .answered, .error: "开始语音"
         }
+    }
+}
+
+private struct ConversationHistoryCard: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Label("聊天记录", systemImage: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                Spacer()
+                Button {
+                    state.closeHistory()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 26, height: 26)
+                        .background(.primary.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if state.conversation.isEmpty {
+                ContentUnavailableView(
+                    "还没有聊天记录",
+                    systemImage: "text.bubble",
+                    description: Text("唤醒浮屿并说句话，记录会显示在这里。")
+                )
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 9) {
+                            ForEach(state.conversation) { item in
+                                historyRow(item)
+                                    .id(item.id)
+                            }
+                        }
+                    }
+                    .onAppear {
+                        if let last = state.conversation.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(FloatingGlass(cornerRadius: 26))
+    }
+
+    private func historyRow(_ item: AppState.ConversationItem) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon(for: item.kind))
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(color(for: item.kind))
+                .frame(width: 24, height: 24)
+                .background(color(for: item.kind).opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(label(for: item.kind))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(color(for: item.kind))
+                    Spacer()
+                    Text(item.createdAt, style: .time)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(item.text)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary.opacity(0.86))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(10)
+        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func label(for kind: AppState.ConversationItem.Kind) -> String {
+        switch kind { case .user: "你"; case .assistant: "浮屿"; case .action: "操作"; case .error: "失败" }
+    }
+    private func icon(for kind: AppState.ConversationItem.Kind) -> String {
+        switch kind { case .user: "person.fill"; case .assistant: "sparkles"; case .action: "cursorarrow.click.2"; case .error: "exclamationmark.triangle.fill" }
+    }
+    private func color(for kind: AppState.ConversationItem.Kind) -> Color {
+        switch kind { case .user: .cyan; case .assistant: .purple; case .action: .mint; case .error: .red }
     }
 }
 
@@ -474,7 +574,7 @@ private struct PhaseParticleGlyph: View {
             .frame(width: 42, height: 42)
         case .auroraFlow:
             glassFrame(cornerRadius: 17) {
-                AuroraFlowField(color: state.phaseColor)
+                AuroraFlowField(color: state.phaseColor, time: time)
                     .frame(width: 46, height: 30)
             }
         case .orbitField:
