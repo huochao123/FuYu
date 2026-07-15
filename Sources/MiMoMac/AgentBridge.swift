@@ -77,13 +77,28 @@ actor MiMoAssistantClient {
         对复杂任务先理解用户真正目标，再交给 Hermes 自主检查、规划、执行和验证；信息不足且会明显改变结果时应先向用户提问，不能擅自猜测。
         """
         try loadPersistentMemoryIfNeeded(profile: profile)
-        let content = try await requestCompletion(
-            systemPrompt: systemPrompt,
-            userText: userText,
-            profile: profile,
-            includeContext: true
-        )
-        let parsedDecision = try Self.parseDecision(content)
+        let parsedDecision: AssistantDecision
+        do {
+            let content = try await requestCompletion(
+                systemPrompt: systemPrompt,
+                userText: userText,
+                profile: profile,
+                includeContext: true
+            )
+            parsedDecision = try Self.parseDecision(content)
+        } catch AssistantServiceError.invalidResponse {
+            let repairPrompt = systemPrompt + """
+
+            上一次返回内容格式不合法。现在重新判断同一个请求，只输出一个完整、可解析的 JSON 对象；不要解释错误，不要输出工具标签或 Markdown。
+            """
+            let repairedContent = try await requestCompletion(
+                systemPrompt: repairPrompt,
+                userText: userText,
+                profile: profile,
+                includeContext: false
+            )
+            parsedDecision = try Self.parseDecision(repairedContent)
+        }
         var decision = Self.reconcileDecision(parsedDecision, userText: userText)
         if case let .reply(text, _) = decision,
            actionAwaitingVerifiedResult,
@@ -137,12 +152,25 @@ actor MiMoAssistantClient {
         浮屿整理的任务：\(originalPrompt)
         Hermes 只读预案：\(hermesPlan)
         """
-        let content = try await requestCompletion(
-            systemPrompt: systemPrompt,
-            userText: userText,
-            profile: profile,
-            includeContext: true
-        )
+        let content: String
+        do {
+            content = try await requestCompletion(
+                systemPrompt: systemPrompt,
+                userText: userText,
+                profile: profile,
+                includeContext: true
+            )
+        } catch AssistantServiceError.invalidResponse {
+            // A malformed/empty review must not silently abandon an otherwise
+            // valid action. Retry once without conversation history so old
+            // tool markup cannot contaminate the strict JSON review response.
+            content = try await requestCompletion(
+                systemPrompt: systemPrompt,
+                userText: userText,
+                profile: profile,
+                includeContext: false
+            )
+        }
         return Self.parsePlanReview(content, fallbackPrompt: originalPrompt)
     }
 

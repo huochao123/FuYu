@@ -61,6 +61,8 @@ final class AppState: ObservableObject {
     @Published var showPermission = false
     @Published var approvalTitle = "允许浮屿执行这个操作？"
     @Published var approvalDetail = "执行前会再次确认，不会在后台静默操作。"
+    @Published var approvalIsListening = false
+    @Published var approvalHeardText = ""
     @Published private(set) var approvalID: UUID?
     @Published var steps: [TaskStep] = []
     @Published var conversation: [ConversationItem] = []
@@ -83,8 +85,12 @@ final class AppState: ObservableObject {
             conversation = stored
         } else {
             conversation = Self.importLegacyModelHistory()
-            persistConversationHistory()
         }
+        conversation.removeAll {
+            $0.text == "等待确认：创建腾讯会议\n下午 3 点到 4 点 · 单次会议 · 使用腾讯会议 MCP"
+        }
+        markInterruptedActionIfNeeded()
+        persistConversationHistory()
     }
 
     var phaseColor: Color {
@@ -125,12 +131,18 @@ final class AppState: ObservableObject {
         isExpanded = true
         phase = .listening
         transcript = preservingApproval ? "请说“允许执行”或“取消执行”" : "我在听…"
+        approvalIsListening = preservingApproval
+        if preservingApproval { approvalHeardText = "" }
         progress = 0
         steps = []
     }
 
     func updateTranscript(_ text: String) {
         guard phase == .listening else { return }
+        if showPermission {
+            approvalHeardText = text
+            return
+        }
         transcript = text.isEmpty ? "我在听…" : text
     }
 
@@ -151,6 +163,8 @@ final class AppState: ObservableObject {
         approvalID = id
         approvalTitle = title
         approvalDetail = detail
+        approvalIsListening = false
+        approvalHeardText = ""
         showPermission = true
         isExpanded = true
         phase = .thinking
@@ -160,6 +174,7 @@ final class AppState: ObservableObject {
 
     func beginExecution(title: String) {
         showPermission = false
+        approvalIsListening = false
         isExpanded = true
         phase = .executing
         taskTitle = title
@@ -237,6 +252,7 @@ final class AppState: ObservableObject {
     func approveFromUserInteraction() {
         guard showPermission, let approvalID else { return }
         showPermission = false
+        approvalIsListening = false
         self.approvalID = nil
         if isRunningDemo {
             finishDemo()
@@ -263,6 +279,8 @@ final class AppState: ObservableObject {
         errorDismissTask?.cancel()
         errorDismissTask = nil
         showPermission = false
+        approvalIsListening = false
+        approvalHeardText = ""
         approvalID = nil
         phase = .idle
         progress = 0
@@ -347,6 +365,24 @@ final class AppState: ObservableObject {
                 : content
             return .init(kind: kind, text: displayText)
         }
+    }
+
+    private func markInterruptedActionIfNeeded() {
+        let lastStarted = conversation.lastIndex(where: {
+            $0.kind == .action && $0.text.hasPrefix("正在执行：")
+        })
+        let lastFinished = conversation.lastIndex(where: {
+            ($0.kind == .action || $0.kind == .error)
+                && ($0.text.hasPrefix("执行成功：")
+                    || $0.text.hasPrefix("执行失败：")
+                    || $0.text.contains("取消了操作")
+                    || $0.text.contains("任务已中断"))
+        })
+        guard let lastStarted, lastFinished.map({ lastStarted > $0 }) ?? true else { return }
+        conversation.append(.init(
+            kind: .error,
+            text: "任务已中断：应用在收到真实执行结果前退出，因此不能确认任务成功。请根据需要重新执行。"
+        ))
     }
 
     private static var defaultConversationHistoryURL: URL {

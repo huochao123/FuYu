@@ -19,7 +19,9 @@ enum MiMoMacApp {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let state = AppState()
+    private let state = AppState(historyURL: CommandLine.arguments.contains("--approval-demo")
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-approval-demo-history.json")
+        : nil)
     private let preferences = AssistantPreferences()
     private var panelController: FloatingPanelController?
     private var statusItem: NSStatusItem?
@@ -101,6 +103,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panelController?.showExpanded()
             state.beginExecution(title: "正在整理下载文件夹")
             state.updateExecution(progress: 0.58, step: 1)
+        } else if CommandLine.arguments.contains("--approval-demo") {
+            state.presentApproval(
+                title: "创建腾讯会议",
+                detail: "下午 3 点到 4 点 · 单次会议 · 使用腾讯会议 MCP"
+            )
+            state.beginListening(preservingApproval: true)
+            panelController?.showExpanded()
         } else if CommandLine.arguments.contains("--settings") || CommandLine.arguments.contains("--chat-demo") {
             if CommandLine.arguments.contains("--chat-demo") {
                 state.beginThinking(userText: "刚才的整理任务完成了吗？")

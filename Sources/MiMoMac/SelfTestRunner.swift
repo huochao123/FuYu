@@ -35,7 +35,12 @@ enum SelfTestRunner {
         state.presentApproval(title: "确认？", detail: "自检")
         check(state.overlayMode == .approval, "权限确认卡状态切换")
         state.beginListening(preservingApproval: true)
-        check(state.overlayMode == .approval && state.showPermission, "授权卡保持显示并等待语音确认")
+        check(
+            state.overlayMode == .approval && state.showPermission && state.approvalIsListening,
+            "授权卡保持显示并使用独立语音状态"
+        )
+        state.updateTranscript("允许执行")
+        check(state.approvalHeardText == "允许执行", "授权口令显示在授权卡而非普通对话")
         state.approveFromUserInteraction()
         check(approvals == 1 && !state.showPermission, "单次批准回调")
 
@@ -50,8 +55,15 @@ enum SelfTestRunner {
         check(state.overlayMode == .history && !state.conversation.isEmpty, "聊天与执行记录面板")
         state.recordAssistantMessage("文字聊天自检")
         check(state.conversation.last?.text == "文字聊天自检", "文字聊天共享会话记录")
+        state.recordActionStatus("执行成功：自检任务")
         let restoredState = AppState(historyURL: historyURL)
-        check(restoredState.conversation.last?.text == "文字聊天自检", "聊天页面跨启动加载本机历史")
+        check(restoredState.conversation.contains(where: { $0.text == "文字聊天自检" }), "聊天页面跨启动加载本机历史")
+        let interruptedURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-interrupted-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: interruptedURL) }
+        let interruptedState = AppState(historyURL: interruptedURL)
+        interruptedState.beginExecution(title: "中断自检")
+        let recoveredInterruptedState = AppState(historyURL: interruptedURL)
+        check(recoveredInterruptedState.conversation.last?.text.contains("任务已中断") == true, "重启后标记没有真实结果的中断任务")
         state.resetToIdle()
 
         let suiteName = "ai.fuyu.selftest.\(UUID().uuidString)"
@@ -96,6 +108,12 @@ enum SelfTestRunner {
         check(!preferences.showDockIcon, "程序坞图标默认保持关闭")
         check(preferences.requireActionApproval, "Mac 操作确认默认开启")
         check(preferences.voiceActionApproval, "授权卡默认支持明确语音确认")
+        check(
+            VoiceService.approvalDecision(for: "允许执行") == true
+                && VoiceService.approvalDecision(for: "不允许执行") == false
+                && VoiceService.approvalDecision(for: "打开计算器") == nil,
+            "授权专用识别只接受允许或取消口令"
+        )
         preferences.personaEnabled = true
         preferences.personaRelationship = .partner
         preferences.personaName = "小屿"

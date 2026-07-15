@@ -37,8 +37,8 @@ struct AssistantRootView: View {
                 CompactTaskBubble(state: state, preferences: preferences)
                     .transition(.scale(scale: 0.78, anchor: .leading).combined(with: .opacity))
             case .approval:
-                ApprovalCard(state: state)
-                    .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
+                ApprovalCard(state: state, preferences: preferences)
+                    .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
             case .history:
                 ConversationHistoryCard(state: state)
                     .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity))
@@ -710,39 +710,105 @@ private struct CompactTaskBubble: View {
 
 private struct ApprovalCard: View {
     @ObservedObject var state: AppState
+    @ObservedObject var preferences: AssistantPreferences
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.orange.opacity(0.13))
-                    Image(systemName: "folder.badge.gearshape")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 46, height: 46)
+        HStack(spacing: 0) {
+            PhaseParticleGlyph(state: state, preferences: preferences, glowRadius: 8)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(state.approvalTitle)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                    Text(state.approvalDetail)
-                        .font(.system(size: 11, design: .rounded))
+            BubbleTail()
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.9))
+                .frame(width: 9, height: 20)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    ApprovalVoiceWave(active: state.approvalIsListening, color: state.phaseColor)
+                    Text(state.approvalIsListening ? "正在听授权口令" : "等待操作确认")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(state.approvalIsListening ? state.phaseColor : .secondary)
+                    if !state.approvalHeardText.isEmpty {
+                        Text("听到：\(state.approvalHeardText)")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
                 }
-                Spacer()
-            }
 
-            HStack(spacing: 10) {
-                Button("取消") { state.cancel() }
-                    .buttonStyle(SoftButtonStyle())
-                Button("仅本次允许") { state.approveFromUserInteraction() }
-                    .buttonStyle(AccentButtonStyle())
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                    Text(state.approvalTitle)
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                    Text(state.approvalDetail)
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button { state.cancel() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 26, height: 26)
+                            .background(.primary.opacity(0.07), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("取消执行")
+
+                    Button { state.approveFromUserInteraction() } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "checkmark")
+                            Text("允许")
+                        }
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .frame(height: 27)
+                        .background(
+                            LinearGradient(
+                                colors: [state.phaseColor, Color.purple.opacity(0.88)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            in: Capsule()
+                        )
+                        .shadow(color: state.phaseColor.opacity(0.3), radius: 6)
+                    }
+                    .buttonStyle(.plain)
+                    .help("仅本次允许")
+                }
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .background(FloatingGlass(cornerRadius: 21))
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .animation(.easeOut(duration: 0.2), value: state.approvalIsListening)
+        .animation(.easeOut(duration: 0.2), value: state.approvalHeardText)
+    }
+}
+
+private struct ApprovalVoiceWave: View {
+    let active: Bool
+    let color: Color
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2) {
+                ForEach(0..<5, id: \.self) { index in
+                    Capsule()
+                        .fill(active ? color : Color.secondary.opacity(0.45))
+                        .frame(width: 2.5, height: active ? 4 + abs(sin(time * 7 + Double(index) * 0.9)) * 8 : 4)
+                }
             }
         }
-        .padding(18)
-        .background(FloatingGlass(cornerRadius: 26))
+        .frame(width: 21, height: 14)
     }
 }
 

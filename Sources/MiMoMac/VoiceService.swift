@@ -5,6 +5,7 @@ import Speech
 final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     static let maxRecognitionRecoveryAttempts = 2
     var onTranscriptReady: ((String) -> Void)?
+    var onApprovalDecision: ((Bool) -> Void)?
 
     private let state: AppState
     private let preferences: AssistantPreferences
@@ -65,6 +66,10 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func startListeningForApproval() async {
         recognitionRecoveryAttempts = 0
+        if isListening {
+            stopRecognitionResources()
+            cleanupRecording()
+        }
         listeningForApproval = true
         await beginListening()
     }
@@ -164,6 +169,25 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             }
             self.onTranscriptReady?(finalText)
         }
+    }
+
+    private func handleApprovalTranscript(_ transcript: String) -> Bool {
+        guard listeningForApproval, let decision = Self.approvalDecision(for: transcript) else { return false }
+        stopRecognitionResources()
+        cleanupRecording()
+        listeningForApproval = false
+        state.approvalIsListening = false
+        onApprovalDecision?(decision)
+        return true
+    }
+
+    static func approvalDecision(for transcript: String) -> Bool? {
+        let compact = transcript.filter { $0.isLetter || $0.isNumber }
+        let deny = ["取消执行", "不要执行", "拒绝执行", "不允许执行", "取消", "算了"]
+        if deny.contains(where: compact.contains) { return false }
+        let approve = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧"]
+        if approve.contains(where: compact.contains) { return true }
+        return nil
     }
 
     func speak(_ text: String, displayText: String? = nil) {
@@ -428,6 +452,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 if let transcript {
                     service.latestTranscript = transcript
                     service.state.updateTranscript(service.latestTranscript)
+                    if service.handleApprovalTranscript(transcript) { return }
                     service.scheduleAutomaticSubmission(for: transcript)
                 }
                 if let errorDescription, service.isListening {
@@ -569,7 +594,17 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                   self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             self.stopRecognitionResources()
             self.cleanupRecording()
-            self.state.resetToIdle()
+            if self.listeningForApproval, self.state.showPermission {
+                self.state.approvalIsListening = false
+                self.recoveryTask?.cancel()
+                self.recoveryTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard let self, self.state.showPermission else { return }
+                    await self.startListeningForApproval()
+                }
+            } else {
+                self.state.resetToIdle()
+            }
         }
     }
 

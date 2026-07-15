@@ -37,6 +37,9 @@ final class AssistantRuntime {
         voice.onTranscriptReady = { [weak self] text in
             self?.handleTranscript(text)
         }
+        voice.onApprovalDecision = { [weak self] approved in
+            self?.handleApprovalDecision(approved)
+        }
         state.onVoiceRequested = { [weak self] in
             guard let self else { return }
             Task { @MainActor in await self.voice.startListening() }
@@ -68,6 +71,18 @@ final class AssistantRuntime {
 
     func handleTextInput(_ text: String) {
         handleUserInput(text, shouldSpeak: false, isVoice: false)
+    }
+
+    private func handleApprovalDecision(_ approved: Bool) {
+        guard state.showPermission else { return }
+        if approved {
+            state.recordActionStatus("已通过语音确认")
+            state.approveFromUserInteraction()
+        } else {
+            state.recordActionStatus("用户通过语音取消了操作", failed: true)
+            cancelCurrentWork()
+            state.resetToIdle(message: "操作已取消")
+        }
     }
 
     private func handleUserInput(_ text: String, shouldSpeak: Bool, isVoice: Bool) {
@@ -314,6 +329,7 @@ final class AssistantRuntime {
             return
         }
         pendingAction = nil
+        voice.cancelAll()
         state.beginExecution(title: action.title)
 
         requestTask?.cancel()
