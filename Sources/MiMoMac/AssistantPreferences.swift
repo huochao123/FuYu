@@ -237,7 +237,20 @@ struct AssistantProfile: Sendable {
     let contextEnabled: Bool
     let contextTurns: Int
     let persistentMemory: Bool
+    let permanentHabitPrompt: String
     let personaPrompt: String
+}
+
+struct PermanentHabit: Codable, Identifiable, Equatable, Sendable {
+    let id: UUID
+    var text: String
+    var updatedAt: Date
+}
+
+enum PermanentMemoryCommand: Equatable, Sendable {
+    case remember(String)
+    case forget(String)
+    case list
 }
 
 @MainActor
@@ -251,6 +264,7 @@ final class AssistantPreferences: ObservableObject {
         static let contextEnabled = "assistantContextEnabled"
         static let contextTurns = "assistantContextTurns"
         static let persistentMemory = "assistantPersistentMemory"
+        static let permanentHabitsEnabled = "assistantPermanentHabitsEnabled"
         static let autoSubmit = "assistantAutoSubmit"
         static let silenceTimeout = "assistantSilenceTimeout"
         static let speechEngine = "assistantSpeechEngine"
@@ -294,6 +308,8 @@ final class AssistantPreferences: ObservableObject {
     @Published var contextEnabled: Bool { didSet { defaults.set(contextEnabled, forKey: Key.contextEnabled) } }
     @Published var contextTurns: Double { didSet { defaults.set(contextTurns, forKey: Key.contextTurns) } }
     @Published var persistentMemory: Bool { didSet { defaults.set(persistentMemory, forKey: Key.persistentMemory) } }
+    @Published var permanentHabitsEnabled: Bool { didSet { defaults.set(permanentHabitsEnabled, forKey: Key.permanentHabitsEnabled) } }
+    @Published private(set) var permanentHabits: [PermanentHabit]
     @Published var autoSubmit: Bool { didSet { defaults.set(autoSubmit, forKey: Key.autoSubmit) } }
     @Published var silenceTimeout: Double { didSet { defaults.set(silenceTimeout, forKey: Key.silenceTimeout) } }
     @Published var speechEngine: SpeechEngine { didSet { defaults.set(speechEngine.rawValue, forKey: Key.speechEngine) } }
@@ -321,10 +337,13 @@ final class AssistantPreferences: ObservableObject {
     @Published var ttsAPIKeyDraft = ""
 
     private let defaults: UserDefaults
+    private let habitStoreURL: URL
     private var ready = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, habitStoreURL: URL? = nil) {
         self.defaults = defaults
+        self.habitStoreURL = habitStoreURL ?? Self.defaultHabitStoreURL
+        permanentHabits = Self.loadHabits(from: habitStoreURL ?? Self.defaultHabitStoreURL)
         voicePolicy = VoiceReplyPolicy(rawValue: defaults.string(forKey: Key.voicePolicy) ?? "smart") ?? .smart
         answerLength = AnswerLength(rawValue: defaults.string(forKey: Key.answerLength) ?? "concise") ?? .concise
         speechRate = min(max(defaults.object(forKey: Key.speechRate) as? Double ?? 0.49, 0.38), 0.58)
@@ -335,6 +354,7 @@ final class AssistantPreferences: ObservableObject {
         contextEnabled = defaults.object(forKey: Key.contextEnabled) as? Bool ?? true
         contextTurns = min(max(defaults.object(forKey: Key.contextTurns) as? Double ?? 8, 2), 24)
         persistentMemory = defaults.object(forKey: Key.persistentMemory) as? Bool ?? false
+        permanentHabitsEnabled = defaults.object(forKey: Key.permanentHabitsEnabled) as? Bool ?? true
         autoSubmit = defaults.object(forKey: Key.autoSubmit) as? Bool ?? true
         silenceTimeout = min(max(defaults.object(forKey: Key.silenceTimeout) as? Double ?? 5, 3), 12)
         let defaultSpeechEngine = KeychainStore.password(service: "codex-mimo-api-key")?.isEmpty == false ? "mimo" : "system"
@@ -372,8 +392,84 @@ final class AssistantPreferences: ObservableObject {
             contextEnabled: contextEnabled,
             contextTurns: Int(contextTurns.rounded()),
             persistentMemory: persistentMemory,
+            permanentHabitPrompt: permanentHabitPrompt,
             personaPrompt: personaPrompt
         )
+    }
+
+    var permanentHabitPrompt: String {
+        guard permanentHabitsEnabled else { return "永久习惯记忆已关闭。" }
+        guard !permanentHabits.isEmpty else { return "暂无用户明确保存的永久习惯。" }
+        return permanentHabits.enumerated().map { "\($0.offset + 1). \($0.element.text)" }.joined(separator: "\n")
+    }
+
+    @discardableResult
+    func rememberHabit(_ rawText: String) -> Bool {
+        let text = Self.normalizedHabit(rawText)
+        guard !text.isEmpty else { return false }
+        if let index = permanentHabits.firstIndex(where: { $0.text.localizedCaseInsensitiveCompare(text) == .orderedSame }) {
+            permanentHabits[index].updatedAt = Date()
+        } else {
+            permanentHabits.append(.init(id: UUID(), text: text, updatedAt: Date()))
+        }
+        trimHabitsToLimits()
+        persistHabits()
+        return true
+    }
+
+    func updateHabit(id: UUID, text rawText: String) {
+        let text = Self.normalizedHabit(rawText)
+        guard let index = permanentHabits.firstIndex(where: { $0.id == id }) else { return }
+        if text.isEmpty {
+            permanentHabits.remove(at: index)
+        } else {
+            permanentHabits[index].text = text
+            permanentHabits[index].updatedAt = Date()
+        }
+        trimHabitsToLimits()
+        persistHabits()
+    }
+
+    func deleteHabit(id: UUID) {
+        permanentHabits.removeAll { $0.id == id }
+        persistHabits()
+    }
+
+    @discardableResult
+    func forgetHabits(matching rawText: String) -> Int {
+        let query = Self.normalizedHabit(rawText).lowercased()
+        guard !query.isEmpty else { return 0 }
+        let oldCount = permanentHabits.count
+        permanentHabits.removeAll {
+            let value = $0.text.lowercased()
+            return value.contains(query) || query.contains(value)
+        }
+        if oldCount != permanentHabits.count { persistHabits() }
+        return oldCount - permanentHabits.count
+    }
+
+    func clearPermanentHabits() {
+        permanentHabits.removeAll()
+        persistHabits()
+    }
+
+    static func memoryCommand(for rawText: String) -> PermanentMemoryCommand? {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let compact = text.replacingOccurrences(of: " ", with: "")
+        let listCommands = ["你记住了什么", "你记得我什么", "查看永久记忆", "查看我的习惯", "列出永久记忆"]
+        if listCommands.contains(where: compact.contains) { return .list }
+
+        let rememberPrefixes = ["请记住：", "请记住:", "帮我记住：", "帮我记住:", "记住：", "记住:", "请记住", "帮我记住", "记住"]
+        if let prefix = rememberPrefixes.first(where: text.hasPrefix) {
+            let value = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : .remember(value)
+        }
+        let forgetPrefixes = ["请忘记：", "请忘记:", "删除记忆：", "删除记忆:", "忘记：", "忘记:", "请忘记", "删除记忆", "忘记"]
+        if let prefix = forgetPrefixes.first(where: text.hasPrefix) {
+            let value = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : .forget(value)
+        }
+        return nil
     }
 
     var personaPrompt: String {
@@ -480,5 +576,39 @@ final class AssistantPreferences: ObservableObject {
         guard !value.isEmpty, value.count <= 52 else { return false }
         let blocked = ["http://", "https://", "```", "|", "•", "\n- ", "\n1."]
         return !blocked.contains(where: value.contains) && value.filter(\.isNewline).count <= 1
+    }
+
+    private func trimHabitsToLimits() {
+        permanentHabits = Array(permanentHabits.suffix(40))
+        while permanentHabits.map(\.text.count).reduce(0, +) > 4_000, permanentHabits.count > 1 {
+            permanentHabits.removeFirst()
+        }
+    }
+
+    private func persistHabits() {
+        do {
+            let directory = habitStoreURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(permanentHabits).write(to: habitStoreURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: habitStoreURL.path)
+        } catch {
+            // The in-memory copy remains usable; a later edit retries persistence.
+        }
+    }
+
+    private static func normalizedHabit(_ text: String) -> String {
+        String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
+    }
+
+    private static func loadHabits(from url: URL) -> [PermanentHabit] {
+        guard let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([PermanentHabit].self, from: data) else { return [] }
+        return Array(values.suffix(40))
+    }
+
+    private static var defaultHabitStoreURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FuYu", isDirectory: true)
+            .appendingPathComponent("permanent-habits.json")
     }
 }

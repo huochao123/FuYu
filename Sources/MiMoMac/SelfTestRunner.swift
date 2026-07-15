@@ -50,8 +50,12 @@ enum SelfTestRunner {
 
         let suiteName = "ai.fuyu.selftest.\(UUID().uuidString)"
         let testDefaults = UserDefaults(suiteName: suiteName)!
-        defer { testDefaults.removePersistentDomain(forName: suiteName) }
-        let preferences = AssistantPreferences(defaults: testDefaults)
+        let habitURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-habits-\(UUID().uuidString).json")
+        defer {
+            testDefaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: habitURL)
+        }
+        let preferences = AssistantPreferences(defaults: testDefaults, habitStoreURL: habitURL)
         check(
             preferences.spokenText(fullText: "好的，已经完成。", suggested: nil) == "好的，已经完成。",
             "智能播报保留短结论"
@@ -127,6 +131,19 @@ enum SelfTestRunner {
             preferences.profile.contextEnabled && preferences.profile.contextTurns == 12,
             "上下文记忆配置"
         )
+        check(
+            AssistantPreferences.memoryCommand(for: "记住：我喜欢简短回答") == .remember("我喜欢简短回答")
+                && AssistantPreferences.memoryCommand(for: "忘记简短回答") == .forget("简短回答")
+                && AssistantPreferences.memoryCommand(for: "你记住了什么") == .list,
+            "永久记忆语音命令识别"
+        )
+        check(
+            preferences.rememberHabit("我喜欢简短回答")
+                && preferences.profile.permanentHabitPrompt.contains("简短回答")
+                && FileManager.default.fileExists(atPath: habitURL.path),
+            "永久习惯本机保存并注入模型"
+        )
+        check(preferences.forgetHabits(matching: "简短回答") == 1, "永久习惯可精确删除")
 
         do {
             let reply = try MiMoAssistantClient.parseDecision(#"{"kind":"reply","reply":"这里是完整回答","spokenReply":"你好"}"#)
@@ -138,6 +155,16 @@ enum SelfTestRunner {
                 action == .action(title: "打开访达", detail: "只打开访达", hermesPrompt: "打开 Finder"),
                 "Mac 操作规划解析"
             )
+            let incompleteAction = try MiMoAssistantClient.parseDecision(
+                "```json\n{\"kind\":\"action\",\"hermesPrompt\":\"打开 Safari 并检查首页\"}\n```"
+            )
+            if case let .action(_, detail, prompt) = incompleteAction {
+                check(detail.contains("Hermes") && prompt.contains("Safari"), "不完整 JSON 操作回复自动补全")
+            } else {
+                check(false, "不完整 JSON 操作回复自动补全")
+            }
+            let alternateReply = try MiMoAssistantClient.parseDecision(#"{"content":"这是兼容回复"}"#)
+            check(alternateReply == .reply(text: "这是兼容回复", spoken: nil), "非标准模型回复兼容解析")
             let corrected = MiMoAssistantClient.reconcileDecision(
                 .reply(text: "好的，我来帮你打开。", spoken: "马上为你打开"),
                 userText: "帮我打开 Safari"
@@ -147,6 +174,11 @@ enum SelfTestRunner {
             } else {
                 check(false, "Mac 操作意图二次校验")
             }
+            let delegation = HermesCommandRunner.delegationPrompt(for: "整理下载目录")
+            check(
+                delegation.contains("先理解目标") && delegation.contains("检查当前环境") && delegation.contains("验证结果"),
+                "复杂任务交给 Hermes 规划、执行与验证"
+            )
 
             let cardURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("fuyu-card-\(UUID().uuidString).json")

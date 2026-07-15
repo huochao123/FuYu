@@ -32,6 +32,7 @@ private final class SettingsViewState: ObservableObject {
     @Published var voiceStatus = ""
     @Published var personaStatus = ""
     @Published var chatDraft = ""
+    @Published var newHabitDraft = ""
     @Published var chatStatus = ""
     @Published var tavernPreview: TavernImportPreview?
     @Published var isTesting = false
@@ -732,8 +733,46 @@ struct SettingsView: View {
                 .disabled(!preferences.contextEnabled)
             }
             settingsCard {
+                Toggle(isOn: $preferences.permanentHabitsEnabled) {
+                    settingLabel("永久习惯记忆", detail: "参考 Hermes：只保存你明确要求记住的习惯")
+                }
+                Divider()
+                HStack(spacing: 8) {
+                    TextField("例如：回答尽量简短，操作前先说明风险", text: $viewState.newHabitDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { addPermanentHabit() }
+                    Button("记住") { addPermanentHabit() }
+                        .disabled(viewState.newHabitDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if preferences.permanentHabits.isEmpty {
+                    Text("暂无永久习惯。你也可以直接对浮屿说“记住……”")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(preferences.permanentHabits) { habit in
+                        Divider()
+                        HStack(spacing: 8) {
+                            Text(habit.text)
+                                .font(.system(size: 11, design: .rounded))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button(role: .destructive) { preferences.deleteHabit(id: habit.id) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    Divider()
+                    HStack {
+                        Text("共 \(preferences.permanentHabits.count) 条 · 每次对话都会提供给模型")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("全部清除", role: .destructive) { preferences.clearPermanentHabits() }
+                    }
+                }
+            }
+            settingsCard {
                 Toggle(isOn: $preferences.persistentMemory) {
-                    settingLabel("跨启动记忆", detail: "关闭应用后仍保留最近对话，仅存储在本机")
+                    settingLabel("跨启动对话", detail: "关闭应用后仍保留最近聊天，与永久习惯分开")
                 }
                 Divider()
                 HStack {
@@ -745,9 +784,15 @@ struct SettingsView: View {
                     Button("清除…", role: .destructive) { viewState.showClearConfirmation = true }
                 }
             }
-            Label("长期记忆默认关闭。开启后会保存最近的对话文字，不保存录音。", systemImage: "lock.shield")
+            Label("永久习惯与最近对话都只保存在本机，不保存录音；可随时查看和删除。", systemImage: "lock.shield")
                 .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
         }
+    }
+
+    private func addPermanentHabit() {
+        let value = viewState.newHabitDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard preferences.rememberHabit(value) else { return }
+        viewState.newHabitDraft = ""
     }
 
     private var advancedPage: some View {

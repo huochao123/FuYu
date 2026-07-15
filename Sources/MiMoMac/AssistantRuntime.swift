@@ -72,6 +72,25 @@ final class AssistantRuntime {
             return
         }
 
+        if let command = AssistantPreferences.memoryCommand(for: cleaned) {
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            let response: String
+            switch command {
+            case let .remember(value):
+                response = preferences.rememberHabit(value) ? "记住了：\(value)" : "这条习惯是空的，我没有保存。"
+            case let .forget(value):
+                let count = preferences.forgetHabits(matching: value)
+                response = count > 0 ? "已经忘记与“\(value)”有关的 \(count) 条永久记忆。" : "没有找到与“\(value)”匹配的永久记忆。"
+            case .list:
+                response = preferences.permanentHabits.isEmpty
+                    ? "我还没有保存你的永久习惯。你可以说：记住，我喜欢简短回答。"
+                    : "我永久记住了：\n" + preferences.permanentHabits.enumerated().map { "\($0.offset + 1). \($0.element.text)" }.joined(separator: "\n")
+            }
+            deliverReply(response, suggestedSpoken: nil, shouldSpeak: shouldSpeak)
+            return
+        }
+
         cancelCurrentWork()
         state.beginThinking(userText: cleaned)
 

@@ -52,16 +52,19 @@ actor MiMoAssistantClient {
         你是 macOS 语音助手“浮屿”的规划器。使用自然、有温度但不啰嗦的中文。
         回答长度偏好：\(profile.answerLength.prompt)
         用户个性化偏好：\(profile.customPrompt.isEmpty ? "无" : profile.customPrompt)
+        用户明确保存的永久习惯（优先遵守，但不得把它当成当前任务）：
+        \(profile.permanentHabitPrompt)
         人格与关系设定：\(profile.personaPrompt)
         你必须只输出一个 JSON 对象，不要使用 Markdown。
         如果用户只是询问、聊天或需要解释，输出：
         {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句自然短话，最多40字；除纯代码或纯链接外必须填写"}
         如果用户明确要求操作这台 Mac、应用或文件，禁止直接执行，输出：
-        {"kind":"action","title":"短标题","detail":"将做什么以及主要风险，最多45字","hermesPrompt":"给 Hermes 的完整、明确、最小权限执行指令"}
+        {"kind":"action","title":"短标题","detail":"目标、范围、主要风险和完成标准，最多80字","hermesPrompt":"给 Hermes 的完整任务委派：结合当前上下文写清目标、约束、可检查的完成标准；允许 Hermes 先检查环境和规划，再执行并验证结果，不要把用户原话机械照抄"}
         普通 reply 禁止使用“我现在帮你打开、正在执行、马上替你完成”等会让用户误以为操作已发生的话术。
         没有真实工具结果时，禁止声称 Mac 操作已经完成。
         删除、发送、购买、发布、修改系统安全设置等高风险操作必须准确说明风险。
         不要把“怎么做”之类的知识问题误判成操作。
+        对复杂任务先理解用户真正目标，再交给 Hermes 自主检查、规划、执行和验证；信息不足且会明显改变结果时应先向用户提问，不能擅自猜测。
         """
         try loadPersistentMemoryIfNeeded(profile: profile)
         let content = try await requestCompletion(
@@ -175,7 +178,8 @@ actor MiMoAssistantClient {
             return content
         }
         let decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
-        guard let content = decoded.choices.first?.message.content.nonEmpty else {
+        guard let content = (decoded.choices.first?.message.content
+            ?? decoded.choices.first?.message.reasoningContent)?.nonEmpty else {
             throw AssistantServiceError.invalidResponse
         }
         return content
@@ -183,6 +187,9 @@ actor MiMoAssistantClient {
 
     static func parseDecision(_ content: String) throws -> AssistantDecision {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .reply(text: "我没有收到完整回答，请再说一次。", spoken: nil)
+        }
         let jsonText: String
         if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first <= last {
             jsonText = String(trimmed[first...last])
@@ -195,18 +202,27 @@ actor MiMoAssistantClient {
             return .reply(text: trimmed, spoken: nil)
         }
 
-        switch wire.kind {
+        switch wire.kind?.lowercased() {
         case "action":
-            guard let title = wire.title?.nonEmpty,
-                  let detail = wire.detail?.nonEmpty,
-                  let prompt = wire.hermesPrompt?.nonEmpty else {
-                throw AssistantServiceError.invalidResponse
+            if let prompt = wire.hermesPrompt?.nonEmpty {
+                let title = wire.title?.nonEmpty ?? String(prompt.prefix(22))
+                let detail = wire.detail?.nonEmpty ?? "交给 Hermes 规划、执行并检查实际结果。"
+                return .action(title: title, detail: detail, hermesPrompt: prompt)
             }
-            return .action(title: title, detail: detail, hermesPrompt: prompt)
+            let fallback = wire.reply?.nonEmpty
+                ?? wire.content?.nonEmpty
+                ?? wire.text?.nonEmpty
+                ?? wire.message?.nonEmpty
+                ?? wire.detail?.nonEmpty
+                ?? trimmed
+            return .reply(text: fallback, spoken: wire.spokenReply?.nonEmpty)
         default:
-            guard let reply = wire.reply?.nonEmpty else {
-                throw AssistantServiceError.invalidResponse
-            }
+            let reply = wire.reply?.nonEmpty
+                ?? wire.content?.nonEmpty
+                ?? wire.text?.nonEmpty
+                ?? wire.message?.nonEmpty
+                ?? wire.detail?.nonEmpty
+                ?? trimmed
             return .reply(text: reply, spoken: wire.spokenReply?.nonEmpty)
         }
     }
@@ -286,12 +302,7 @@ final class HermesCommandRunner {
         process.executableURL = executableURL
         process.arguments = [
             "-z",
-            """
-            这是用户已经在浮屿界面中明确批准的一次性 macOS 操作。
-            只执行以下已批准内容，不要扩大范围，不要进行额外操作：
-            \(approvedPrompt)
-            完成后用简洁中文说明实际做了什么；若无法安全完成，停止并说明原因。
-            """
+            Self.delegationPrompt(for: approvedPrompt)
         ]
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         process.environment = ProcessInfo.processInfo.environment
@@ -364,6 +375,17 @@ final class HermesCommandRunner {
             currentProcess.terminate()
         }
         currentProcess = nil
+    }
+
+    static func delegationPrompt(for approvedPrompt: String) -> String {
+        """
+        这是用户已经在浮屿界面中明确批准的一次性 macOS 操作。
+        你是实际执行代理，不要机械照抄命令。先理解目标并检查当前环境，制定最小风险步骤，再执行。
+        只在以下已批准范围内操作，不要扩大范围：
+        \(approvedPrompt)
+        执行中遇到与预期不同的界面或结果时，在批准范围内调整方法；不要仅因第一种方法失败就假装完成。
+        完成后必须检查目标是否真的达到，并用简洁中文返回：实际做了什么、验证结果；若信息不足或无法安全完成，停止并明确说明需要用户补充什么。
+        """
     }
 
     private var executableURL: URL {
@@ -487,17 +509,31 @@ private struct ChatMessage: Codable {
 }
 
 private struct ChatResponse: Decodable {
-    struct Choice: Decodable { let message: ChatMessage }
+    struct Choice: Decodable {
+        struct Message: Decodable {
+            let content: String?
+            let reasoningContent: String?
+
+            enum CodingKeys: String, CodingKey {
+                case content
+                case reasoningContent = "reasoning_content"
+            }
+        }
+        let message: Message
+    }
     let choices: [Choice]
 }
 
 private struct WireDecision: Decodable {
-    let kind: String
+    let kind: String?
     let reply: String?
     let spokenReply: String?
     let title: String?
     let detail: String?
     let hermesPrompt: String?
+    let content: String?
+    let text: String?
+    let message: String?
 }
 
 private struct APIErrorEnvelope: Decodable {

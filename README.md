@@ -59,10 +59,10 @@ All images below are captured from the current build. They are not concept rende
 - **可切换语音识别**：Apple 本地、Apple 自动，以及 Apple 实时字幕 + MiMo ASR 最终校正的混合模式。
 - **语音中断恢复**：识别服务或麦克风链路意外失效时会重建录音资源并有限次数自动重连；已有识别文字会优先保留。
 - **可靠的自然语音回复**：支持 macOS 离线声音、MiMo 云端音色、OpenAI TTS；智能模式会把长回答压成一句可朗读结论，避免出现文字有回复但声音直接跳过。
-- **上下文与本地记忆**：可调整上下文轮数；跨启动记忆默认关闭，开启后仅保存在本机。
+- **分层本地记忆**：最近对话与永久习惯分开管理；可以直接说“记住……”保存习惯，随后每次对话都会使用，并可在设置中查看、添加或删除。
 - **人格与关系设定**：可自定义角色名称、背景、性格、说话方式，以及朋友、伴侣、家人、同事等关系方向。
 - **SillyTavern 兼容导入**：支持 Character Card V1/V2 JSON、常见 PNG 内嵌角色卡和 Chat Completion 提示词预设 JSON；导入前可预览字段、兼容性提示，并选择替换或合并。
-- **更可靠的 Mac 操作**：操作意图会二次校验，避免模型只说“马上执行”却没有调用工具；Hermes 的真实成功或失败结果会写回上下文，方便继续追问“刚才完成了吗”。操作前确认默认开启，也可由用户在高级设置中关闭。
+- **更可靠的 Mac 操作**：复杂任务会被整理成目标、约束和完成标准，再交给 Hermes 检查环境、规划、执行和验证；真实成功或失败结果会写回上下文。操作前确认默认开启，也可由用户在高级设置中关闭。
 - **轻量执行气泡**：Mac 操作使用与语音回复一致的粒子动画和紧凑气泡展示步骤与进度，不再弹出大型任务框；异常卡住的任务会在 2 分钟后自动停止并记录原因。
 - **隐私可控**：不包含遥测或广告；模型密钥、偏好和记忆不写入源码仓库。
 
@@ -146,10 +146,10 @@ FuYu is a lightweight native voice assistant for macOS. It stays completely hidd
 - **Selectable speech recognition** — Apple on-device, Apple automatic, or Apple live captions with MiMo ASR final correction.
 - **Recognition recovery** — rebuilds recording resources and retries a limited number of times after unexpected recognition or microphone interruptions while preserving captured text.
 - **Reliable natural voice output** — macOS offline voices, MiMo cloud voices, OpenAI TTS, plus a reserved local voice-cloning endpoint. Smart mode condenses long replies into a speakable sentence instead of silently skipping them.
-- **Context and local memory** — configurable context length; persistent memory is opt-in and stored locally.
+- **Layered local memory** — recent conversation and explicit permanent habits are managed separately; say “remember…” to save a preference, then inspect or delete it in Settings.
 - **Personas and relationships** — customize the character name, background, personality, speaking style, and relationship direction.
 - **SillyTavern imports** — preview and import Character Card V1/V2 JSON, common embedded PNG cards, and Chat Completion prompt preset JSON; choose whether to replace or merge.
-- **More reliable Mac actions** — action intent is checked again before replying, and real Hermes success/failure results are written back into context so follow-up questions can use the actual outcome. Approval remains enabled by default and can be disabled in Advanced Settings.
+- **More reliable Mac actions** — complex requests are turned into goals, constraints, and acceptance criteria so Hermes can inspect, plan, execute, and verify. Real results are written back into context. Approval remains enabled by default and can be disabled in Advanced Settings.
 - **Lightweight execution bubble** — Mac actions use the same particle motion and compact bubble language as voice replies instead of a large task panel. A task that remains stuck for two minutes is stopped and recorded as a failure.
 - **Privacy-conscious** — no telemetry or advertising; credentials, preferences, and memory are never part of the source repository.
 

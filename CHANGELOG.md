@@ -1,5 +1,19 @@
 # 更新日志 / Changelog
 
+## v0.3.1 — 2026-07-15
+
+- 新增参考 Hermes USER.md 思路的永久习惯记忆：只保存用户明确要求记住的内容，与最近对话分开，并可在设置中查看、添加和删除。
+- “记住……”“忘记……”和“你记住了什么”由本机直接处理，不依赖模型是否正确输出 JSON。
+- 永久习惯会随每次模型请求提供给助手，支持跨重启保存，并限制条数与总长度，避免上下文无限膨胀。
+- 模型返回缺字段、Markdown 代码块或兼容字段时自动补全与降级，不再轻易显示“无法解析”。
+- 复杂 Mac 任务不再机械转发原话：浮屿会整理目标、约束和完成标准，Hermes 会先检查环境、规划步骤、执行并验证实际结果。
+
+- Added explicit, locally stored permanent habit memory inspired by Hermes USER.md, separate from recent conversation history.
+- “Remember”, “forget”, and “what do you remember” commands are handled locally and do not depend on model JSON output.
+- Permanent habits are injected into each model request, persist across launches, and remain bounded in count and size.
+- Added tolerant parsing for missing fields, fenced JSON, and common compatible response fields.
+- Complex Mac tasks now carry goals, constraints, and acceptance criteria so Hermes can inspect, plan, execute, and verify instead of mechanically replaying the request.
+
 ## v0.3.0 — 2026-07-15
 
 ### 新功能 / Added
