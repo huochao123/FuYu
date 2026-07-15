@@ -18,6 +18,22 @@
 
 ![浮屿语音气泡](docs/images/voice-bubble.png)
 
+### 与语音界面一致的执行气泡 / Execution bubble
+
+Mac 操作不再弹出大型任务面板。执行时由当前皮肤动画自然展开为紧凑气泡，只保留任务名称、当前步骤、进度和停止按钮；完成后直接过渡到回复状态。下图录制自实际运行版本。
+
+Mac actions no longer open a large task panel. The active skin expands into a compact bubble containing only the task, current step, progress, and stop control, then transitions directly into the reply state. The animation below was captured from the running app.
+
+![浮屿真实执行气泡动画](docs/images/execution-bubble.gif)
+
+### 共享上下文的文字聊天 / Text chat with shared context
+
+设置中心的“聊天”页可直接打字，并与语音共享上下文。等待授权、Hermes 接收任务、执行成功或失败都会留下记录；文字输入默认保持静音。下图同样来自实际运行版本。
+
+The Chat page supports silent text input with the same context used by voice. Approval, Hermes acceptance, success, and failure events remain visible in one trail. This screenshot is also captured from the running app.
+
+![浮屿文字聊天与任务记录](docs/images/text-chat.png)
+
 ### 真实皮肤画廊 / Live skin gallery
 
 以下图片均直接截取自当前版本，不是概念图。六款皮肤都可以在“常规 → 悬浮入口皮肤”中即时切换。
@@ -47,11 +63,12 @@ All images below are captured from the current build. They are not concept rende
 - **人格与关系设定**：可自定义角色名称、背景、性格、说话方式，以及朋友、伴侣、家人、同事等关系方向。
 - **SillyTavern 兼容导入**：支持 Character Card V1/V2 JSON、常见 PNG 内嵌角色卡和 Chat Completion 提示词预设 JSON；导入前可预览字段、兼容性提示，并选择替换或合并。
 - **更可靠的 Mac 操作**：操作意图会二次校验，避免模型只说“马上执行”却没有调用工具；Hermes 的真实成功或失败结果会写回上下文，方便继续追问“刚才完成了吗”。操作前确认默认开启，也可由用户在高级设置中关闭。
+- **轻量执行气泡**：Mac 操作使用与语音回复一致的粒子动画和紧凑气泡展示步骤与进度，不再弹出大型任务框；异常卡住的任务会在 2 分钟后自动停止并记录原因。
 - **隐私可控**：不包含遥测或广告；模型密钥、偏好和记忆不写入源码仓库。
 
 角色卡和预设文件仅在本机解析。当前版本不会导入角色知识库、世界书、群聊、脚本或扩展；检测到角色知识库时会在预览中明确提示。兼容范围参考 [SillyTavern 文档](https://docs.sillytavern.app/usage/characters/) 与 [Character Card V2 规范](https://github.com/malfoyslastname/character-card-spec-v2)。
 
-浮屿正在从“单轮语音指令”继续向可验证的智能体演进。已实现能力与后续计划见 [ROADMAP.md](ROADMAP.md)。
+浮屿正在从“单轮语音指令”继续向可验证的智能体演进。查看 [更新日志](CHANGELOG.md) 与 [后续路线图](ROADMAP.md)。
 
 ### 系统要求
 
@@ -133,11 +150,12 @@ FuYu is a lightweight native voice assistant for macOS. It stays completely hidd
 - **Personas and relationships** — customize the character name, background, personality, speaking style, and relationship direction.
 - **SillyTavern imports** — preview and import Character Card V1/V2 JSON, common embedded PNG cards, and Chat Completion prompt preset JSON; choose whether to replace or merge.
 - **More reliable Mac actions** — action intent is checked again before replying, and real Hermes success/failure results are written back into context so follow-up questions can use the actual outcome. Approval remains enabled by default and can be disabled in Advanced Settings.
+- **Lightweight execution bubble** — Mac actions use the same particle motion and compact bubble language as voice replies instead of a large task panel. A task that remains stuck for two minutes is stopped and recorded as a failure.
 - **Privacy-conscious** — no telemetry or advertising; credentials, preferences, and memory are never part of the source repository.
 
 Character cards and presets are parsed locally. World books, group chats, scripts, and extension payloads are not imported in the current release; detected character books are called out in the preview. See the [SillyTavern documentation](https://docs.sillytavern.app/usage/characters/) and [Character Card V2 specification](https://github.com/malfoyslastname/character-card-spec-v2) for the source formats.
 
-FuYu is evolving from one-shot voice commands toward a verifiable agent loop. See [ROADMAP.md](ROADMAP.md) for the implemented baseline and planned stages.
+FuYu is evolving from one-shot voice commands toward a verifiable agent loop. See the [changelog](CHANGELOG.md) and [roadmap](ROADMAP.md).
 
 ### Requirements
 

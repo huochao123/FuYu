@@ -97,7 +97,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--demo") {
             panelController?.showExpanded()
             state.runDemo()
-        } else if CommandLine.arguments.contains("--settings") {
+        } else if CommandLine.arguments.contains("--task-demo") {
+            panelController?.showExpanded()
+            state.beginExecution(title: "正在整理下载文件夹")
+            state.updateExecution(progress: 0.58, step: 1)
+        } else if CommandLine.arguments.contains("--settings") || CommandLine.arguments.contains("--chat-demo") {
+            if CommandLine.arguments.contains("--chat-demo") {
+                state.beginThinking(userText: "刚才的整理任务完成了吗？")
+                state.recordActionStatus("Hermes 已接收任务：整理下载文件夹")
+                state.recordActionStatus("执行成功：已按文件类型完成整理")
+                state.recordAssistantMessage("已经完成，Hermes 返回的结果是文件已按类型整理。")
+                state.resetToIdle()
+            }
             showSettings()
         } else if CommandLine.arguments.contains("--response-demo") {
             state.presentSilentReply("这是一条不会整段朗读的长回复。完整内容会保留在阅读卡中，你可以滚动查看、选择文字，或者直接继续追问。")
@@ -343,6 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showSettings() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
+                state: state,
                 preferences: preferences,
                 testConnection: { [weak self] in
                     guard let runtime = self?.runtime else { throw AssistantServiceError.invalidResponse }
@@ -354,6 +366,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 previewVoice: { [weak self] in
                     self?.voiceService?.speak("你好，我是浮屿。以后我会用这个声音陪你处理 Mac 上的事情。")
+                },
+                sendText: { [weak self] text in
+                    self?.runtime?.handleTextInput(text)
+                },
+                runDiagnostics: { [weak self] in
+                    guard let self else { return "浮屿运行状态不可用" }
+                    let modelKey = self.preferences.modelProvider.requiresAPIKey
+                        ? (self.preferences.hasStoredAPIKey ? "已配置" : "未配置")
+                        : "不需要"
+                    return """
+                    应用：运行正常
+                    语音权限：\(self.voiceService?.permissionSummary ?? "未知")
+                    当前模型：\(self.preferences.modelProvider.title) / \(self.preferences.modelName)
+                    模型密钥：\(modelKey)
+                    Hermes：\(self.runtime?.isHermesAvailable == true ? "已就绪" : "未安装或不可用")
+                    操作确认：\(self.preferences.requireActionApproval ? "已开启" : "已关闭")
+                    """
                 }
             )
         }

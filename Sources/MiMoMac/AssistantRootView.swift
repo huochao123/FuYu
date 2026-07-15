@@ -34,8 +34,8 @@ struct AssistantRootView: View {
                 ResponseCard(state: state)
                     .transition(.scale(scale: 0.84, anchor: .bottomTrailing).combined(with: .opacity))
             case .task:
-                CompactTaskCard(state: state)
-                    .transition(.scale(scale: 0.84, anchor: .bottomTrailing).combined(with: .opacity))
+                CompactTaskBubble(state: state, preferences: preferences)
+                    .transition(.scale(scale: 0.78, anchor: .leading).combined(with: .opacity))
             case .approval:
                 ApprovalCard(state: state)
                     .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
@@ -538,6 +538,7 @@ private struct BubbleTail: Shape {
 private struct PhaseParticleGlyph: View {
     @ObservedObject var state: AppState
     @ObservedObject var preferences: AssistantPreferences
+    var glowRadius: CGFloat = 11
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
@@ -546,7 +547,7 @@ private struct PhaseParticleGlyph: View {
             .frame(width: 54, height: 42)
             .scaleEffect(scale(time))
             .offset(x: shake(time))
-            .shadow(color: state.phaseColor.opacity(glow(time)), radius: 11)
+            .shadow(color: state.phaseColor.opacity(glow(time)), radius: glowRadius)
         }
         .frame(width: 64, height: 62)
         .contentShape(Rectangle())
@@ -640,58 +641,66 @@ private struct PhaseParticleGlyph: View {
     }
 }
 
-private struct CompactTaskCard: View {
+private struct CompactTaskBubble: View {
     @ObservedObject var state: AppState
+    @ObservedObject var preferences: AssistantPreferences
 
     var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Label(state.phase.rawValue, systemImage: "sparkles")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(state.phaseColor)
-                Spacer()
-                Text(state.modelLabel)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: 9) {
+            PhaseParticleGlyph(state: state, preferences: preferences, glowRadius: 7)
 
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(state.phaseColor.opacity(0.13))
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(state.phaseColor)
-                }
-                .frame(width: 40, height: 40)
+            HStack(spacing: 0) {
+                BubbleTail()
+                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.88))
+                    .frame(width: 9, height: 18)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Circle().fill(state.phaseColor).frame(width: 5, height: 5)
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(state.phaseColor)
+                        Text(currentStep)
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(state.phaseColor)
+                        Spacer()
+                        Text("\(Int(state.progress * 100))%")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                    }
+
                     Text(state.taskTitle)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                    Text(currentStep)
-                        .font(.system(size: 11, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary.opacity(0.88))
+                        .lineLimit(1)
+
+                    ProgressView(value: state.progress)
+                        .progressViewStyle(.linear)
+                        .tint(state.phaseColor)
+                        .controlSize(.mini)
                 }
-                Spacer()
-                Text("\(Int(state.progress * 100))%")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(state.phaseColor)
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+                .background(FloatingGlass(cornerRadius: 21))
 
-            ProgressView(value: state.progress)
-                .tint(state.phaseColor)
-
-            HStack {
-                Text("所有操作都可以撤销")
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("停止") { state.cancel() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                Button { state.cancel() } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 28, height: 28)
+                        .background(.red.opacity(0.1), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("停止任务")
+                .accessibilityLabel("停止任务")
                     .foregroundStyle(.red)
             }
         }
-        .padding(17)
-        .background(FloatingGlass(cornerRadius: 25))
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .animation(.easeInOut(duration: 0.28), value: state.progress)
+        .animation(.easeOut(duration: 0.2), value: currentStep)
     }
 
     private var currentStep: String {

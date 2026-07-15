@@ -16,7 +16,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         .orb: NSSize(width: 62, height: 62),
         .voice: NSSize(width: 430, height: 82),
         .response: NSSize(width: 388, height: 182),
-        .task: NSSize(width: 374, height: 166),
+        .task: NSSize(width: 430, height: 82),
         .approval: NSSize(width: 388, height: 174),
         .history: NSSize(width: 430, height: 390)
     ]
@@ -138,7 +138,7 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         case .response:
             radius = 26
         case .task:
-            radius = 25
+            radius = 0
         case .approval:
             radius = 26
         case .history:

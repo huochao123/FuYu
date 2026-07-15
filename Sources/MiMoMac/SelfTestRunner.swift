@@ -20,6 +20,11 @@ enum SelfTestRunner {
         check(state.overlayMode == .voice && state.phase == .listening, "录音状态切换")
         state.beginExecution(title: "自检任务")
         check(state.overlayMode == .task && state.steps.count == 3, "执行卡状态切换")
+        check(
+            state.steps.map(\.title) == ["正在连接 Hermes", "Hermes 已接收任务", "正在检查结果"]
+                && HermesCommandRunner.timeoutSeconds == 120,
+            "执行气泡展示 Hermes 阶段并限制卡住时间"
+        )
         state.updateExecution(progress: 2, step: 2)
         check(state.progress == 1, "进度边界限制")
 
@@ -39,6 +44,8 @@ enum SelfTestRunner {
         check(state.phase == .answered && state.overlayMode == .voice, "静默回复使用气泡保持可读")
         state.openHistory()
         check(state.overlayMode == .history && !state.conversation.isEmpty, "聊天与执行记录面板")
+        state.recordAssistantMessage("文字聊天自检")
+        check(state.conversation.last?.text == "文字聊天自检", "文字聊天共享会话记录")
         state.resetToIdle()
 
         let suiteName = "ai.fuyu.selftest.\(UUID().uuidString)"

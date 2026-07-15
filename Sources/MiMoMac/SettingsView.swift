@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "常规"
+    case chat = "聊天"
     case voice = "声音"
     case models = "模型"
     case memory = "记忆"
@@ -14,6 +15,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: "slider.horizontal.3"
+        case .chat: "bubble.left.and.bubble.right.fill"
         case .voice: "waveform"
         case .models: "cpu"
         case .memory: "brain.head.profile"
@@ -25,21 +27,26 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
 @MainActor
 private final class SettingsViewState: ObservableObject {
-    @Published var selection: SettingsSection = .general
+    @Published var selection: SettingsSection = CommandLine.arguments.contains("--chat-demo") ? .chat : .general
     @Published var modelStatus = ""
     @Published var voiceStatus = ""
     @Published var personaStatus = ""
+    @Published var chatDraft = ""
+    @Published var chatStatus = ""
     @Published var tavernPreview: TavernImportPreview?
     @Published var isTesting = false
     @Published var showClearConfirmation = false
 }
 
 struct SettingsView: View {
+    @ObservedObject var state: AppState
     @ObservedObject var preferences: AssistantPreferences
     @ObservedObject fileprivate var viewState: SettingsViewState
     let testConnection: () async throws -> String
     let clearMemory: () async throws -> Void
     let previewVoice: () -> Void
+    let sendText: (String) -> Void
+    let runDiagnostics: () async -> String
 
     var body: some View {
         HStack(spacing: 0) {
@@ -160,6 +167,7 @@ struct SettingsView: View {
     private var pageSubtitle: String {
         switch viewState.selection {
         case .general: "决定浮屿怎么回答，以及哪些内容值得说出口"
+        case .chat: "直接打字对话，并查看每次操作的真实结果"
         case .voice: "切换免费系统音色、MiMo 云端语音或本地克隆服务"
         case .models: "随时切换云端模型、本地模型或兼容服务"
         case .memory: "控制对话上下文和跨启动记忆的保存范围"
@@ -172,12 +180,139 @@ struct SettingsView: View {
     private var pageContent: some View {
         switch viewState.selection {
         case .general: generalPage
+        case .chat: chatPage
         case .voice: voicePage
         case .models: modelsPage
         case .memory: memoryPage
         case .persona: personaPage
         case .advanced: advancedPage
         }
+    }
+
+    private var chatPage: some View {
+        VStack(spacing: 14) {
+            settingsCard {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("文字聊天").font(.system(size: 13, weight: .semibold, design: .rounded))
+                        Text("与语音共享上下文；文字输入默认不会朗读")
+                            .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task {
+                            viewState.chatStatus = "正在检查…"
+                            let result = await runDiagnostics()
+                            state.recordAssistantMessage("本机功能自检\n\(result)")
+                            viewState.chatStatus = "自检完成"
+                        }
+                    } label: {
+                        Label("本机自检", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Divider()
+
+                if state.conversation.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
+                            .font(.system(size: 24)).foregroundStyle(.tertiary)
+                        Text("还没有聊天记录")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("在下方输入文字，语音对话和 Mac 操作结果也会显示在这里。")
+                            .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 285)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 9) {
+                                ForEach(state.conversation) { item in
+                                    settingsChatRow(item).id(item.id)
+                                }
+                            }
+                        }
+                        .frame(height: 285)
+                        .onAppear {
+                            if let last = state.conversation.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                        .onChange(of: state.conversation) { _, items in
+                            if let last = items.last {
+                                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                HStack(spacing: 9) {
+                    TextField("输入消息或 Mac 操作，例如：检查刚才的任务是否完成", text: $viewState.chatDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { submitTextChat() }
+                    Button {
+                        submitTextChat()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewState.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+
+            HStack {
+                Label("成功、失败、等待授权和 Hermes 返回结果都会进入同一份记录。", systemImage: "checkmark.message.fill")
+                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                Spacer()
+                if !viewState.chatStatus.isEmpty {
+                    Text(viewState.chatStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func submitTextChat() {
+        let value = viewState.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        viewState.chatDraft = ""
+        viewState.chatStatus = "已发送"
+        sendText(value)
+    }
+
+    private func settingsChatRow(_ item: AppState.ConversationItem) -> some View {
+        let tint: Color = switch item.kind {
+        case .user: .cyan
+        case .assistant: .purple
+        case .action: .mint
+        case .error: .red
+        }
+        let title: String = switch item.kind {
+        case .user: "你"
+        case .assistant: "浮屿"
+        case .action: "操作"
+        case .error: "失败"
+        }
+        return HStack(alignment: .top, spacing: 9) {
+            Circle().fill(tint).frame(width: 6, height: 6).padding(.top, 6)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(title).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(tint)
+                    Spacer()
+                    Text(item.createdAt, style: .time)
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                }
+                Text(item.text)
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(.primary.opacity(0.86))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 
     private var voicePage: some View {
@@ -923,10 +1058,13 @@ private struct TavernImportPreviewSheet: View {
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     init(
+        state: AppState,
         preferences: AssistantPreferences,
         testConnection: @escaping () async throws -> String,
         clearMemory: @escaping () async throws -> Void,
-        previewVoice: @escaping () -> Void
+        previewVoice: @escaping () -> Void,
+        sendText: @escaping (String) -> Void,
+        runDiagnostics: @escaping () async -> String
     ) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
@@ -942,11 +1080,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let viewState = SettingsViewState()
         window.contentView = NSHostingView(
             rootView: SettingsView(
+                state: state,
                 preferences: preferences,
                 viewState: viewState,
                 testConnection: testConnection,
                 clearMemory: clearMemory,
-                previewVoice: previewVoice
+                previewVoice: previewVoice,
+                sendText: sendText,
+                runDiagnostics: runDiagnostics
             )
         )
         super.init(window: window)

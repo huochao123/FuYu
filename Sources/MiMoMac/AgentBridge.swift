@@ -271,6 +271,7 @@ actor MiMoAssistantClient {
 
 @MainActor
 final class HermesCommandRunner {
+    static let timeoutSeconds = 120
     private var currentProcess: Process?
 
     var isAvailable: Bool {
@@ -314,6 +315,18 @@ final class HermesCommandRunner {
         }
 
         let box = ProcessBox(process)
+        var timedOut = false
+        let timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.timeoutSeconds))
+            guard let self,
+                  !Task.isCancelled,
+                  self.currentProcess === process,
+                  process.isRunning else { return }
+            timedOut = true
+            process.terminate()
+        }
+        defer { timeoutTask.cancel() }
+
         let status: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 process.terminationHandler = { finished in
@@ -336,6 +349,7 @@ final class HermesCommandRunner {
         let errorOutput = (try? String(contentsOf: stderrURL, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if Task.isCancelled { throw AssistantServiceError.cancelled }
+        if timedOut { throw AssistantServiceError.hermesFailed("任务超过 2 分钟没有结束，已自动停止。你可以换一种说法后重试。") }
         guard status == 0 else {
             throw AssistantServiceError.hermesFailed(errorOutput.nonEmpty ?? "退出码 \(status)")
         }

@@ -6,6 +6,7 @@ final class AssistantRuntime {
         let approvalID: UUID
         let title: String
         let prompt: String
+        let shouldSpeak: Bool
     }
 
     private let state: AppState
@@ -57,6 +58,14 @@ final class AssistantRuntime {
     }
 
     func handleTranscript(_ text: String) {
+        handleUserInput(text, shouldSpeak: true)
+    }
+
+    func handleTextInput(_ text: String) {
+        handleUserInput(text, shouldSpeak: false)
+    }
+
+    private func handleUserInput(_ text: String, shouldSpeak: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else {
             state.presentError("没有听清，请再说一次。")
@@ -77,7 +86,7 @@ final class AssistantRuntime {
                 switch decision {
                 case let .reply(text, spoken):
                     self.pendingAction = nil
-                    self.deliverReply(text, suggestedSpoken: spoken)
+                    self.deliverReply(text, suggestedSpoken: spoken, shouldSpeak: shouldSpeak)
                 case let .action(title, detail, prompt):
                     guard self.hermes.isAvailable else {
                         let message = AssistantServiceError.hermesUnavailable.localizedDescription
@@ -96,14 +105,16 @@ final class AssistantRuntime {
                         self.pendingAction = PendingAction(
                             approvalID: approvalID,
                             title: title,
-                            prompt: prompt
+                            prompt: prompt,
+                            shouldSpeak: shouldSpeak
                         )
                     } else {
                         let approvalID = UUID()
                         self.pendingAction = PendingAction(
                             approvalID: approvalID,
                             title: title,
-                            prompt: prompt
+                            prompt: prompt,
+                            shouldSpeak: shouldSpeak
                         )
                         self.executeApprovedAction(approvalID: approvalID)
                     }
@@ -160,7 +171,7 @@ final class AssistantRuntime {
                     succeeded: true,
                     profile: self.preferences.profile
                 )
-                self.deliverReply(result, suggestedSpoken: nil)
+                self.deliverReply(result, suggestedSpoken: nil, shouldSpeak: action.shouldSpeak)
             } catch is CancellationError {
                 return
             } catch AssistantServiceError.cancelled {
@@ -179,8 +190,8 @@ final class AssistantRuntime {
         }
     }
 
-    private func deliverReply(_ text: String, suggestedSpoken: String?) {
-        if let spoken = preferences.spokenText(fullText: text, suggested: suggestedSpoken) {
+    private func deliverReply(_ text: String, suggestedSpoken: String?, shouldSpeak: Bool) {
+        if shouldSpeak, let spoken = preferences.spokenText(fullText: text, suggested: suggestedSpoken) {
             voice.speak(spoken, displayText: text)
         } else {
             state.presentSilentReply(text)

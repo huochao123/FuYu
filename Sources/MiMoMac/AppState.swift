@@ -147,9 +147,9 @@ final class AppState: ObservableObject {
         taskTitle = title
         progress = 0.08
         steps = [
-            .init(title: "连接 Hermes", detail: "准备安全执行环境", status: .active),
-            .init(title: "执行操作", detail: "按照已批准的指令操作", status: .pending),
-            .init(title: "检查结果", detail: "确认操作是否完成", status: .pending)
+            .init(title: "正在连接 Hermes", detail: "准备安全执行环境", status: .active),
+            .init(title: "Hermes 已接收任务", detail: "正在按照指令执行", status: .pending),
+            .init(title: "正在检查结果", detail: "确认操作是否完成", status: .pending)
         ]
         appendConversation(.action, "正在执行：\(title)")
     }
@@ -268,6 +268,10 @@ final class AppState: ObservableObject {
 
     func recordActionStatus(_ text: String, failed: Bool = false) {
         appendConversation(failed ? .error : .action, text)
+    }
+
+    func recordAssistantMessage(_ text: String) {
+        appendConversation(.assistant, text)
     }
 
     private func appendConversation(_ kind: ConversationItem.Kind, _ text: String) {
