@@ -108,6 +108,7 @@ enum SelfTestRunner {
         check(!preferences.showDockIcon, "程序坞图标默认保持关闭")
         check(preferences.requireActionApproval, "Mac 操作确认默认开启")
         check(preferences.voiceActionApproval, "授权卡默认支持明确语音确认")
+        check(preferences.voiceInterruption, "朗读与执行过程默认允许语音打断")
         check(
             VoiceService.approvalDecision(for: "允许执行") == true
                 && VoiceService.approvalDecision(for: "不允许执行") == false
@@ -146,8 +147,21 @@ enum SelfTestRunner {
         check(preferences.endPauseSeconds == 2.8 && preferences.continuousConversation, "停顿等待与连续对话配置")
         check(
             VoiceService.automaticSubmissionDelayMilliseconds(for: "我还想说然后", baseSeconds: 2.3) == 3_600
-                && VoiceService.automaticSubmissionDelayMilliseconds(for: "你好", baseSeconds: 2.3) == 2_650,
+                && VoiceService.automaticSubmissionDelayMilliseconds(for: "你好", baseSeconds: 2.3) == 2_650
+                && VoiceService.automaticSubmissionDelayMilliseconds(for: "好，就这样去执行吧", baseSeconds: 2.3) == 320
+                && VoiceService.automaticSubmissionDelayMilliseconds(for: "可以了", baseSeconds: 2.3) == 320,
             "停顿提交会给短句和未完句留出时间"
+        )
+        check(
+            VoiceService.userInterruptionText(transcript: "这是助手正在说的话", spokenText: "这是助手正在说的话") == nil
+                && VoiceService.userInterruptionText(transcript: "停一下改成下午五点", spokenText: "我正在执行创建会议") == "停一下改成下午五点",
+            "朗读回声会被忽略而用户抢话会被接收"
+        )
+        check(
+            AssistantRuntime.isPauseOnlyCommand("等一下")
+                && AssistantRuntime.isPauseOnlyCommand("先别执行")
+                && !AssistantRuntime.isPauseOnlyCommand("等一下，改成下午五点"),
+            "执行中暂停与修改指令分流"
         )
         check(
             VoiceService.shouldAttemptRecognitionRecovery(attempts: 0, hasCapturedText: false)

@@ -28,6 +28,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var recoveryTask: Task<Void, Never>?
     private var recognitionRecoveryAttempts = 0
     private var listeningForApproval = false
+    private var listeningForBargeIn = false
+    private var listeningForTaskInterruption = false
+    private var bargeInSpokenText = ""
+    private var bargeInStartTask: Task<Void, Never>?
+    private var currentSpokenText = ""
 
     init(state: AppState, preferences: AssistantPreferences) {
         self.state = state
@@ -74,9 +79,30 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         await beginListening()
     }
 
-    private func beginListening() async {
+    func startListeningForTaskInterruption() async {
+        guard preferences.voiceInterruption else { return }
+        recognitionRecoveryAttempts = 0
+        listeningForApproval = false
+        listeningForTaskInterruption = true
+        await beginListening(monitoringTaskInterruption: true)
+    }
+
+    func stopTaskInterruptionMonitoring() {
+        guard listeningForTaskInterruption else { return }
+        listeningForTaskInterruption = false
+        stopRecognitionResources()
+        cleanupRecording()
+    }
+
+    private func beginListening(
+        preservingSpeechForBargeIn: Bool = false,
+        spokenText: String = "",
+        monitoringTaskInterruption: Bool = false
+    ) async {
         guard !isListening else { return }
-        cancelSpeech()
+        if !preservingSpeechForBargeIn && !monitoringTaskInterruption {
+            cancelSpeech()
+        }
         submissionTask?.cancel()
 
         guard await requestPermissionsIfNeeded() else {
@@ -111,6 +137,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         )
 
         let input = audioEngine.inputNode
+        if preservingSpeechForBargeIn {
+            try? input.setVoiceProcessingEnabled(true)
+        } else if input.isVoiceProcessingEnabled {
+            try? input.setVoiceProcessingEnabled(false)
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             stopRecognitionResources()
@@ -126,8 +157,15 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
-            state.beginListening(preservingApproval: listeningForApproval)
-            scheduleInitialSilenceTimeout()
+            if preservingSpeechForBargeIn {
+                listeningForBargeIn = true
+                bargeInSpokenText = spokenText
+            } else if monitoringTaskInterruption {
+                listeningForTaskInterruption = true
+            } else {
+                state.beginListening(preservingApproval: listeningForApproval)
+                scheduleInitialSilenceTimeout()
+            }
         } catch {
             stopRecognitionResources()
             recoverRecognition(after: "无法启动麦克风：\(error.localizedDescription)")
@@ -167,6 +205,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 self.state.resetToIdle()
                 return
             }
+            self.listeningForTaskInterruption = false
             self.onTranscriptReady?(finalText)
         }
     }
@@ -190,10 +229,58 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return nil
     }
 
+    private func scheduleBargeInMonitoring(for spokenText: String) {
+        bargeInStartTask?.cancel()
+        guard preferences.voiceInterruption, !spokenText.isEmpty else { return }
+        bargeInStartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(280))
+            guard let self, !Task.isCancelled else { return }
+            await self.beginListening(preservingSpeechForBargeIn: true, spokenText: spokenText)
+        }
+    }
+
+    private func handleBargeInTranscript(_ transcript: String) -> Bool {
+        guard listeningForBargeIn else { return false }
+        guard let interruption = Self.userInterruptionText(
+            transcript: transcript,
+            spokenText: bargeInSpokenText
+        ) else {
+            return true
+        }
+
+        listeningForBargeIn = false
+        bargeInSpokenText = ""
+        cancelSpeech(preservingBargeInRecognition: true)
+        latestTranscript = interruption
+        state.beginListening()
+        state.updateTranscript(interruption)
+        scheduleAutomaticSubmission(for: interruption)
+        return true
+    }
+
+    static func userInterruptionText(transcript: String, spokenText: String) -> String? {
+        let heard = transcript.lowercased().filter { $0.isLetter || $0.isNumber }
+        let spoken = spokenText.lowercased().filter { $0.isLetter || $0.isNumber }
+        guard heard.count >= 2 else { return nil }
+        if spoken.contains(heard) { return nil }
+
+        let heardCharacters = Array(heard)
+        if heardCharacters.count >= 6 {
+            for prefixLength in stride(from: heardCharacters.count - 2, through: 4, by: -1) {
+                let prefix = String(heardCharacters.prefix(prefixLength))
+                guard spoken.contains(prefix) else { continue }
+                let remainder = String(heardCharacters.dropFirst(prefixLength))
+                return remainder.count >= 2 ? remainder : nil
+            }
+        }
+        return heard
+    }
+
     func speak(_ text: String, displayText: String? = nil) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         cancelSpeech()
+        currentSpokenText = cleaned
         state.beginSpeaking(displayText ?? cleaned)
         switch preferences.speechEngine {
         case .system:
@@ -228,8 +315,13 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         continuousTask = nil
         recoveryTask?.cancel()
         recoveryTask = nil
+        bargeInStartTask?.cancel()
+        bargeInStartTask = nil
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
+        listeningForBargeIn = false
+        listeningForTaskInterruption = false
+        bargeInSpokenText = ""
         stopRecognitionResources()
         cleanupRecording()
         cancelSpeech()
@@ -239,7 +331,15 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         scheduleContinuousListening()
     }
 
-    private func cancelSpeech() {
+    private func cancelSpeech(preservingBargeInRecognition: Bool = false) {
+        bargeInStartTask?.cancel()
+        bargeInStartTask = nil
+        if listeningForBargeIn && !preservingBargeInRecognition {
+            listeningForBargeIn = false
+            bargeInSpokenText = ""
+            stopRecognitionResources()
+            cleanupRecording()
+        }
         speechTask?.cancel()
         speechTask = nil
         if audioPlayer?.isPlaying == true { audioPlayer?.stop() }
@@ -260,6 +360,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         utterance.rate = Float(preferences.speechRate)
         utterance.pitchMultiplier = 1.02
         synthesizer.speak(utterance)
+        scheduleBargeInMonitoring(for: text)
     }
 
     private func generateCloudSpeech(_ text: String, engine: SpeechEngine) async throws -> Data {
@@ -402,6 +503,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         player.prepareToPlay()
         guard player.play() else { throw VoiceOutputError.playbackFailed }
         audioPlayer = player
+        scheduleBargeInMonitoring(for: currentSpokenText)
     }
 
     private func requestPermissionsIfNeeded() async -> Bool {
@@ -450,6 +552,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             Task { @MainActor in
                 guard let service else { return }
                 if let transcript {
+                    if service.handleBargeInTranscript(transcript) { return }
                     service.latestTranscript = transcript
                     service.state.updateTranscript(service.latestTranscript)
                     if service.handleApprovalTranscript(transcript) { return }
@@ -491,6 +594,24 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     private func handleRecognitionInterruption(_ description: String) {
+        if listeningForBargeIn {
+            listeningForBargeIn = false
+            bargeInSpokenText = ""
+            stopRecognitionResources()
+            cleanupRecording()
+            return
+        }
+        if listeningForTaskInterruption {
+            stopRecognitionResources()
+            cleanupRecording()
+            recoveryTask?.cancel()
+            recoveryTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(350))
+                guard let self, self.listeningForTaskInterruption else { return }
+                await self.beginListening(monitoringTaskInterruption: true)
+            }
+            return
+        }
         let captured = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         stopRecognitionResources()
         cleanupRecording()
@@ -576,8 +697,15 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     static func automaticSubmissionDelayMilliseconds(for value: String, baseSeconds: Double) -> Int {
         let unfinishedEndings = ["然后", "还有", "因为", "但是", "所以", "就是", "比如", "嗯", "呃"]
+        let explicitEndings = [
+            "就这样", "就这样吧", "去执行吧", "执行吧", "开始执行吧", "开始吧", "就这么办", "按这个做", "照这个做",
+            "好了执行吧", "可以了", "好了",
+            "停一下", "等一下", "先别执行", "暂停任务", "取消任务"
+        ]
         let sentenceEndings = ["。", "！", "？", ".", "!", "?"]
         let base = Int(baseSeconds * 1_000)
+        let compact = value.filter { $0.isLetter || $0.isNumber }
+        if explicitEndings.contains(where: compact.hasSuffix) { return 320 }
         if unfinishedEndings.contains(where: value.hasSuffix) { return base + 1_300 }
         if sentenceEndings.contains(where: value.hasSuffix) { return max(1_200, base - 250) }
         return value.count <= 8 ? base + 350 : base
@@ -618,21 +746,32 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
     }
 
+    private func finishSpeakingNormally() {
+        bargeInStartTask?.cancel()
+        bargeInStartTask = nil
+        if listeningForBargeIn {
+            listeningForBargeIn = false
+            bargeInSpokenText = ""
+            stopRecognitionResources()
+            cleanupRecording()
+        }
+        state.finishSpeaking()
+        scheduleContinuousListening()
+    }
+
     nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
         Task { @MainActor [weak self] in
-            self?.state.finishSpeaking()
-            self?.scheduleContinuousListening()
+            self?.finishSpeakingNormally()
         }
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor [weak self] in
             self?.audioPlayer = nil
-            self?.state.finishSpeaking()
-            self?.scheduleContinuousListening()
+            self?.finishSpeakingNormally()
         }
     }
 }

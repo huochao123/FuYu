@@ -822,6 +822,10 @@ struct SettingsView: View {
                     settingLabel("连续对话", detail: "浮屿回答完会自动继续聆听，无声时再收起")
                 }
                 Divider()
+                Toggle(isOn: $preferences.voiceInterruption) {
+                    settingLabel("允许说话打断", detail: "浮屿朗读时，你一开口就停止播报并听取新指令")
+                }
+                Divider()
                 settingRow("无声自动收起", detail: "没有识别到声音时自动关闭回复条") {
                     HStack {
                         Slider(value: $preferences.silenceTimeout, in: 3...12, step: 1).frame(width: 150)

@@ -6,6 +6,7 @@ final class AssistantRuntime {
         let approvalID: UUID
         let title: String
         let prompt: String
+        let originalRequest: String
         let shouldSpeak: Bool
     }
 
@@ -21,6 +22,7 @@ final class AssistantRuntime {
 
     private var requestTask: Task<Void, Never>?
     private var pendingAction: PendingAction?
+    private var activeAction: PendingAction?
     private var pendingClarification: PendingClarification?
 
     init(
@@ -114,6 +116,23 @@ final class AssistantRuntime {
             }
         }
 
+        if let interruptedAction = activeAction {
+            let originalRequest = interruptedAction.originalRequest
+            let pauseOnly = Self.isPauseOnlyCommand(cleaned)
+            cancelCurrentWork()
+            state.recordActionStatus("已暂停当前任务：(interruptedAction.title)")
+            pendingClarification = .init(originalRequest: originalRequest)
+            if pauseOnly {
+                state.beginThinking(userText: cleaned)
+                deliverReply(
+                    "已经暂停。你可以直接告诉我需要修改或补充什么，我会按新要求重新规划。",
+                    suggestedSpoken: "已经暂停，你直接告诉我需要怎么改。",
+                    shouldSpeak: shouldSpeak
+                )
+                return
+            }
+        }
+
         if let command = AssistantPreferences.memoryCommand(for: cleaned) {
             cancelCurrentWork()
             state.beginThinking(userText: cleaned)
@@ -201,6 +220,7 @@ final class AssistantRuntime {
                                 title: title,
                                 detail: summary,
                                 prompt: finalPrompt,
+                                originalRequest: effectiveRequest,
                                 shouldSpeak: shouldSpeak
                             )
                         case let .clarify(question):
@@ -210,7 +230,13 @@ final class AssistantRuntime {
                             self.deliverReply(question, suggestedSpoken: question, shouldSpeak: shouldSpeak)
                         }
                     } else {
-                        self.prepareAction(title: title, detail: detail, prompt: prompt, shouldSpeak: shouldSpeak)
+                        self.prepareAction(
+                            title: title,
+                            detail: detail,
+                            prompt: prompt,
+                            originalRequest: effectiveRequest,
+                            shouldSpeak: shouldSpeak
+                        )
                     }
                 }
             } catch is CancellationError {
@@ -223,7 +249,13 @@ final class AssistantRuntime {
         }
     }
 
-    private func prepareAction(title: String, detail: String, prompt: String, shouldSpeak: Bool) {
+    private func prepareAction(
+        title: String,
+        detail: String,
+        prompt: String,
+        originalRequest: String,
+        shouldSpeak: Bool
+    ) {
         let displayTitle = Self.cleanActionTitle(title)
         if preferences.requireActionApproval {
             let approvalID = state.presentApproval(title: displayTitle, detail: detail)
@@ -231,6 +263,7 @@ final class AssistantRuntime {
                 approvalID: approvalID,
                 title: displayTitle,
                 prompt: prompt,
+                originalRequest: originalRequest,
                 shouldSpeak: shouldSpeak
             )
             if preferences.voiceActionApproval {
@@ -244,6 +277,7 @@ final class AssistantRuntime {
                 approvalID: approvalID,
                 title: displayTitle,
                 prompt: prompt,
+                originalRequest: originalRequest,
                 shouldSpeak: shouldSpeak
             )
             executeApprovedAction(approvalID: approvalID)
@@ -304,6 +338,12 @@ final class AssistantRuntime {
         text.filter { $0.isLetter || $0.isNumber }
     }
 
+    static func isPauseOnlyCommand(_ text: String) -> Bool {
+        let compact = text.filter { $0.isLetter || $0.isNumber }
+        return ["停", "停一下", "等一下", "先停一下", "先别执行", "暂停", "暂停任务", "取消任务"]
+            .contains(compact)
+    }
+
     static func cleanActionTitle(_ title: String) -> String {
         let firstLine = title.split(whereSeparator: \.isNewline).first.map(String.init) ?? title
         let value = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -318,6 +358,7 @@ final class AssistantRuntime {
         requestTask?.cancel()
         requestTask = nil
         pendingAction = nil
+        activeAction = nil
         if !preservingClarification { pendingClarification = nil }
         hermes.cancel()
         voice.cancelAll()
@@ -331,6 +372,10 @@ final class AssistantRuntime {
         pendingAction = nil
         voice.cancelAll()
         state.beginExecution(title: action.title)
+        activeAction = action
+        Task { @MainActor [weak self] in
+            await self?.voice.startListeningForTaskInterruption()
+        }
 
         requestTask?.cancel()
         requestTask = Task { @MainActor [weak self] in
@@ -348,6 +393,8 @@ final class AssistantRuntime {
             do {
                 let result = try await self.hermes.execute(action.prompt)
                 try Task.checkCancellation()
+                self.voice.stopTaskInterruptionMonitoring()
+                self.activeAction = nil
                 self.state.updateExecution(progress: 0.94, step: 2)
                 try? await Task.sleep(for: .milliseconds(220))
                 try Task.checkCancellation()
@@ -367,6 +414,8 @@ final class AssistantRuntime {
             } catch AssistantServiceError.cancelled {
                 return
             } catch {
+                self.voice.stopTaskInterruptionMonitoring()
+                self.activeAction = nil
                 let message = error.localizedDescription
                 self.state.recordActionStatus("执行失败：\(action.title)\n\(message)", failed: true)
                 try? await self.modelClient.recordActionResult(

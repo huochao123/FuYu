@@ -278,6 +278,7 @@ final class AssistantPreferences: ObservableObject {
         static let recognitionEngine = "assistantRecognitionEngine"
         static let endPauseSeconds = "assistantEndPauseSeconds"
         static let continuousConversation = "assistantContinuousConversation"
+        static let voiceInterruption = "assistantVoiceInterruption"
         static let floatingSkin = "assistantFloatingSkin"
         static let showDockIcon = "assistantShowDockIcon"
         static let pushToTalkShortcut = "assistantPushToTalkShortcut"
@@ -324,6 +325,7 @@ final class AssistantPreferences: ObservableObject {
     @Published var recognitionEngine: RecognitionEngine { didSet { defaults.set(recognitionEngine.rawValue, forKey: Key.recognitionEngine) } }
     @Published var endPauseSeconds: Double { didSet { defaults.set(endPauseSeconds, forKey: Key.endPauseSeconds) } }
     @Published var continuousConversation: Bool { didSet { defaults.set(continuousConversation, forKey: Key.continuousConversation) } }
+    @Published var voiceInterruption: Bool { didSet { defaults.set(voiceInterruption, forKey: Key.voiceInterruption) } }
     @Published var floatingSkin: FloatingSkin { didSet { defaults.set(floatingSkin.rawValue, forKey: Key.floatingSkin) } }
     @Published var showDockIcon: Bool { didSet { defaults.set(showDockIcon, forKey: Key.showDockIcon) } }
     @Published var pushToTalkShortcut: PushToTalkShortcut { didSet { defaults.set(pushToTalkShortcut.rawValue, forKey: Key.pushToTalkShortcut) } }
@@ -371,6 +373,7 @@ final class AssistantPreferences: ObservableObject {
         recognitionEngine = RecognitionEngine(rawValue: defaults.string(forKey: Key.recognitionEngine) ?? "mimoHybrid") ?? .mimoHybrid
         endPauseSeconds = min(max(defaults.object(forKey: Key.endPauseSeconds) as? Double ?? 2.3, 1.2), 5)
         continuousConversation = defaults.object(forKey: Key.continuousConversation) as? Bool ?? false
+        voiceInterruption = defaults.object(forKey: Key.voiceInterruption) as? Bool ?? true
         floatingSkin = FloatingSkin(rawValue: defaults.string(forKey: Key.floatingSkin) ?? "particleFrame") ?? .particleFrame
         showDockIcon = defaults.object(forKey: Key.showDockIcon) as? Bool ?? false
         pushToTalkShortcut = PushToTalkShortcut(rawValue: defaults.string(forKey: Key.pushToTalkShortcut) ?? "fnHold") ?? .fnHold
