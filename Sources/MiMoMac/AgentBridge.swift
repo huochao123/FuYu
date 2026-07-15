@@ -345,23 +345,25 @@ final class HermesCommandRunner {
     }
 
     func execute(_ approvedPrompt: String) async throws -> String {
-        try await run(Self.delegationPrompt(for: approvedPrompt))
+        try await run(Self.delegationPrompt(for: approvedPrompt), planningOnly: false)
     }
 
     func proposePlan(for taskPrompt: String) async throws -> String {
-        try await run(Self.planningPrompt(for: taskPrompt))
+        try await run(Self.planningPrompt(for: taskPrompt), planningOnly: true)
     }
 
-    private func run(_ instruction: String) async throws -> String {
+    private func run(_ instruction: String, planningOnly: Bool) async throws -> String {
         guard isAvailable else { throw AssistantServiceError.hermesUnavailable }
         cancel()
 
         let process = Process()
         process.executableURL = executableURL
-        process.arguments = [
-            "-z",
-            instruction
-        ]
+        process.arguments = ["-z", instruction]
+        if planningOnly {
+            // An explicit toolset pin prevents Hermes from loading terminal,
+            // file, or computer-control tools during the read-only review.
+            process.arguments?.append(contentsOf: ["--toolsets", "web"])
+        }
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
         process.environment = ProcessInfo.processInfo.environment
 
