@@ -9,6 +9,10 @@ final class AssistantRuntime {
         let shouldSpeak: Bool
     }
 
+    private struct PendingClarification {
+        let originalRequest: String
+    }
+
     private let state: AppState
     private let voice: VoiceService
     private let preferences: AssistantPreferences
@@ -17,6 +21,7 @@ final class AssistantRuntime {
 
     private var requestTask: Task<Void, Never>?
     private var pendingAction: PendingAction?
+    private var pendingClarification: PendingClarification?
 
     init(
         state: AppState,
@@ -58,18 +63,35 @@ final class AssistantRuntime {
     }
 
     func handleTranscript(_ text: String) {
-        handleUserInput(text, shouldSpeak: true)
+        handleUserInput(text, shouldSpeak: true, isVoice: true)
     }
 
     func handleTextInput(_ text: String) {
-        handleUserInput(text, shouldSpeak: false)
+        handleUserInput(text, shouldSpeak: false, isVoice: false)
     }
 
-    private func handleUserInput(_ text: String, shouldSpeak: Bool) {
+    private func handleUserInput(_ text: String, shouldSpeak: Bool, isVoice: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else {
             state.presentError("没有听清，请再说一次。")
             return
+        }
+
+        if isVoice, preferences.voiceActionApproval, state.showPermission {
+            let compact = cleaned.replacingOccurrences(of: " ", with: "")
+            let approvePhrases = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧", "允许"]
+            let denyPhrases = ["取消执行", "不要执行", "拒绝执行", "不允许", "取消", "算了"]
+            if approvePhrases.contains(compact) {
+                state.recordActionStatus("已通过语音确认")
+                state.approveFromUserInteraction()
+                return
+            }
+            if denyPhrases.contains(compact) {
+                state.recordActionStatus("用户通过语音取消了操作", failed: true)
+                cancelCurrentWork()
+                state.resetToIdle(message: "操作已取消")
+                return
+            }
         }
 
         if let command = AssistantPreferences.memoryCommand(for: cleaned) {
@@ -91,14 +113,36 @@ final class AssistantRuntime {
             return
         }
 
-        cancelCurrentWork()
+        let effectiveRequest: String
+        if let clarification = pendingClarification {
+            if cleaned == "取消" || cleaned == "算了" {
+                pendingClarification = nil
+                cancelCurrentWork()
+                state.beginThinking(userText: cleaned)
+                deliverReply("好的，这个任务已经取消。", suggestedSpoken: nil, shouldSpeak: shouldSpeak)
+                return
+            }
+            effectiveRequest = clarification.originalRequest + "\n用户补充信息：" + cleaned
+            pendingClarification = nil
+        } else if let question = Self.missingCriticalDetailsQuestion(for: cleaned) {
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            pendingClarification = .init(originalRequest: cleaned)
+            state.recordActionStatus("执行前需要补充：\(question)")
+            deliverReply(question, suggestedSpoken: question, shouldSpeak: shouldSpeak)
+            return
+        } else {
+            effectiveRequest = cleaned
+        }
+
+        cancelCurrentWork(preservingClarification: true)
         state.beginThinking(userText: cleaned)
 
         requestTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let decision = try await self.modelClient.decide(
-                    for: cleaned,
+                    for: effectiveRequest,
                     profile: self.preferences.profile
                 )
                 try Task.checkCancellation()
@@ -119,12 +163,12 @@ final class AssistantRuntime {
                         self.state.presentError(message)
                         return
                     }
-                    if Self.requiresPlanReview(userText: cleaned) {
+                    if Self.requiresPlanReview(userText: effectiveRequest) {
                         self.state.recordActionStatus("复杂任务预审：正在向 Hermes 获取只读方案")
                         let proposedPlan = try await self.hermes.proposePlan(for: prompt)
                         try Task.checkCancellation()
                         let review = try await self.modelClient.reviewExecutionPlan(
-                            userRequest: cleaned,
+                            userRequest: effectiveRequest,
                             originalPrompt: prompt,
                             hermesPlan: proposedPlan,
                             profile: self.preferences.profile
@@ -141,6 +185,7 @@ final class AssistantRuntime {
                             )
                         case let .clarify(question):
                             self.pendingAction = nil
+                            self.pendingClarification = .init(originalRequest: effectiveRequest)
                             self.state.recordActionStatus("方案需要补充信息：\(question)")
                             self.deliverReply(question, suggestedSpoken: question, shouldSpeak: shouldSpeak)
                         }
@@ -167,6 +212,11 @@ final class AssistantRuntime {
                 prompt: prompt,
                 shouldSpeak: shouldSpeak
             )
+            if preferences.voiceActionApproval {
+                Task { @MainActor [weak self] in
+                    await self?.voice.startListeningForApproval()
+                }
+            }
         } else {
             let approvalID = UUID()
             pendingAction = PendingAction(
@@ -185,7 +235,8 @@ final class AssistantRuntime {
         let simpleVerbs = ["打开", "关闭", "启动", "退出", "调高", "调低", "切换"]
         let complexSignals = [
             "然后", "之后", "同时", "并且", "全部", "所有", "批量", "按照", "整理", "开发", "修改",
-            "修复", "测试", "检查", "分析", "优化", "安装", "卸载", "配置", "项目", "文件夹里的"
+            "修复", "测试", "检查", "分析", "优化", "安装", "卸载", "配置", "项目", "文件夹里的",
+            "长期", "周期", "重复会议", "创建会议", "开一个会", "预约", "日程", "发送", "删除", "发布", "购买"
         ]
         let punctuationSteps = value.filter { ",，;；".contains($0) }.count
         if value.count <= 24, simpleVerbs.contains(where: value.contains), !complexSignals.contains(where: value.contains) {
@@ -194,10 +245,49 @@ final class AssistantRuntime {
         return value.count >= 38 || punctuationSteps >= 2 || complexSignals.contains(where: value.contains)
     }
 
+    static func missingCriticalDetailsQuestion(for userText: String) -> String? {
+        let value = userText.lowercased()
+        let hasNumber = value.unicodeScalars.contains { (48...57).contains($0.value) }
+        if value.contains("亮度"),
+           !hasNumber, !["调高", "调低", "最高", "最低", "增加", "降低"].contains(where: value.contains) {
+            return "你想把屏幕亮度调到百分之多少？也可以说调高一点或调低一点。"
+        }
+        if value.contains("音量"),
+           !hasNumber, !["调高", "调低", "静音", "最大", "增加", "降低"].contains(where: value.contains) {
+            return "你想把音量调到百分之多少？也可以说调高一点、调低一点或静音。"
+        }
+        if ["发消息", "发送消息", "发邮件", "发送邮件"].contains(where: value.contains) {
+            let hasRecipient = ["给", "发给", "收件人", "联系人"].contains(where: value.contains)
+            let hasContent = ["内容", "说", "告诉", "主题"].contains(where: value.contains)
+            if !hasRecipient || !hasContent { return "你要发给谁，具体内容是什么？我确认清楚后再执行。" }
+        }
+        if value.contains("删除"), !["这个", "这些", "文件", "文件夹", "."].contains(where: value.contains) {
+            return "你想删除哪个具体内容？请告诉我名称或位置。"
+        }
+        let isMeetingCreation = value.contains("会议")
+            && ["创建", "新建", "开一个", "开个", "预约", "安排"].contains(where: value.contains)
+        guard isMeetingCreation else { return nil }
+
+        let hasTime = value.range(of: #"([0-2]?\d)[:：点时]|今天|明天|后天|上午|下午|晚上"#, options: .regularExpression) != nil
+        let hasDuration = value.range(of: #"\d+\s*(分钟|小时)|到\s*[0-2]?\d"#, options: .regularExpression) != nil
+        let hasRecurrenceChoice = ["单次", "临时", "长期", "周期", "每天", "每周", "工作日", "重复"].contains(where: value.contains)
+        let asksLongTerm = ["长期", "周期", "每天", "每周", "工作日", "重复"].contains(where: value.contains)
+        let hasLongTermBoundary = !asksLongTerm || ["到", "截止", "共", "场", "次", "长期有效"].contains(where: value.contains)
+        guard hasTime, hasDuration, hasRecurrenceChoice, hasLongTermBoundary else {
+            return "这个会议什么时候开始、持续多久？是单次会议还是长期重复？如果长期，请告诉我重复频率和结束日期或总场次。"
+        }
+        return nil
+    }
+
     func cancelCurrentWork() {
+        cancelCurrentWork(preservingClarification: false)
+    }
+
+    private func cancelCurrentWork(preservingClarification: Bool) {
         requestTask?.cancel()
         requestTask = nil
         pendingAction = nil
+        if !preservingClarification { pendingClarification = nil }
         hermes.cancel()
         voice.cancelAll()
     }
@@ -236,7 +326,10 @@ final class AssistantRuntime {
                     succeeded: true,
                     profile: self.preferences.profile
                 )
-                self.deliverReply(result, suggestedSpoken: nil, shouldSpeak: action.shouldSpeak)
+                let naturalSpoken = action.shouldSpeak
+                    ? try? await self.modelClient.makeNaturalSpokenSummary(for: result, profile: self.preferences.profile)
+                    : nil
+                self.deliverReply(result, suggestedSpoken: naturalSpoken, shouldSpeak: action.shouldSpeak)
             } catch is CancellationError {
                 return
             } catch AssistantServiceError.cancelled {

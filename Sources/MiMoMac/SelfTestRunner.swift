@@ -14,7 +14,9 @@ enum SelfTestRunner {
             }
         }
 
-        let state = AppState()
+        let historyURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-history-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: historyURL) }
+        let state = AppState(historyURL: historyURL)
         check(state.overlayMode == .orb, "初始状态是悬浮球")
         state.beginListening()
         check(state.overlayMode == .voice && state.phase == .listening, "录音状态切换")
@@ -32,6 +34,8 @@ enum SelfTestRunner {
         state.onApprovalGranted = { _ in approvals += 1 }
         state.presentApproval(title: "确认？", detail: "自检")
         check(state.overlayMode == .approval, "权限确认卡状态切换")
+        state.beginListening(preservingApproval: true)
+        check(state.overlayMode == .approval && state.showPermission, "授权卡保持显示并等待语音确认")
         state.approveFromUserInteraction()
         check(approvals == 1 && !state.showPermission, "单次批准回调")
 
@@ -46,6 +50,8 @@ enum SelfTestRunner {
         check(state.overlayMode == .history && !state.conversation.isEmpty, "聊天与执行记录面板")
         state.recordAssistantMessage("文字聊天自检")
         check(state.conversation.last?.text == "文字聊天自检", "文字聊天共享会话记录")
+        let restoredState = AppState(historyURL: historyURL)
+        check(restoredState.conversation.last?.text == "文字聊天自检", "聊天页面跨启动加载本机历史")
         state.resetToIdle()
 
         let suiteName = "ai.fuyu.selftest.\(UUID().uuidString)"
@@ -71,6 +77,17 @@ enum SelfTestRunner {
             )?.isEmpty == false,
             "长回复至少生成一句播报"
         )
+        let technicalSpeech = preferences.spokenText(
+            fullText: "会议创建成功。会议ID：2439430414761153758\n加入链接：https://meeting.tencent.com/dm/Example\nX-Tc-Trace: abcdef1234567890",
+            suggested: nil
+        ) ?? ""
+        check(
+            !technicalSpeech.isEmpty
+                && !technicalSpeech.lowercased().contains("trace")
+                && !technicalSpeech.contains("https")
+                && !technicalSpeech.contains("2439430414761153758"),
+            "语音审校过滤链接、ID 和英文追踪码"
+        )
         check(ModelProvider.allCases.count == 10, "主流模型服务预设")
         check(SpeechEngine.allCases.count == 4 && MiMoVoice.allCases.count == 8, "语音引擎与 MiMo 音色预设")
         check(RecognitionEngine.allCases.count == 3, "本地、自动与混合语音识别预设")
@@ -78,6 +95,7 @@ enum SelfTestRunner {
         check(FloatingPlacement.allCases.count == 3 && preferences.floatingPlacement == .notch, "刘海下方默认位置")
         check(!preferences.showDockIcon, "程序坞图标默认保持关闭")
         check(preferences.requireActionApproval, "Mac 操作确认默认开启")
+        check(preferences.voiceActionApproval, "授权卡默认支持明确语音确认")
         preferences.personaEnabled = true
         preferences.personaRelationship = .partner
         preferences.personaName = "小屿"
@@ -165,6 +183,17 @@ enum SelfTestRunner {
             }
             let alternateReply = try MiMoAssistantClient.parseDecision(#"{"content":"这是兼容回复"}"#)
             check(alternateReply == .reply(text: "这是兼容回复", spoken: nil), "非标准模型回复兼容解析")
+            let leakedTool = try MiMoAssistantClient.parseDecision("<tool_call><function=hermes_mcp__run></function></tool_call>")
+            check(
+                leakedTool == .reply(text: "我识别到这是一个操作请求，需要交给执行流程处理。", spoken: nil)
+                    && MiMoAssistantClient.containsInternalToolMarkup("<tool_call>"),
+                "内部工具调用不会泄漏到聊天或语音"
+            )
+            check(
+                MiMoAssistantClient.claimsVerifiedSuccess("会议已经创建成功")
+                    && !MiMoAssistantClient.claimsVerifiedSuccess("我准备创建会议"),
+                "无真实结果时识别并拦截成功声明"
+            )
             let corrected = MiMoAssistantClient.reconcileDecision(
                 .reply(text: "好的，我来帮你打开。", spoken: "马上为你打开"),
                 userText: "帮我打开 Safari"
@@ -181,8 +210,19 @@ enum SelfTestRunner {
             )
             check(
                 !AssistantRuntime.requiresPlanReview(userText: "打开 Safari")
-                    && AssistantRuntime.requiresPlanReview(userText: "整理下载文件夹，然后按照类型归档，并检查是否有重复文件"),
+                    && AssistantRuntime.requiresPlanReview(userText: "整理下载文件夹，然后按照类型归档，并检查是否有重复文件")
+                    && AssistantRuntime.requiresPlanReview(userText: "帮我开一个长期会议"),
                 "简单任务直达、复杂任务进入方案预审"
+            )
+            check(AssistantRuntime.missingCriticalDetailsQuestion(for: "帮我开一个会议")?.contains("什么时候") == true, "会议信息缺失时先补问")
+            let brightnessQuestion = AssistantRuntime.missingCriticalDetailsQuestion(for: "把亮度调一下")
+            check(brightnessQuestion?.contains("百分之多少") == true, "亮度数值缺失时先补问")
+            check(AssistantRuntime.missingCriticalDetailsQuestion(for: "打开 Safari") == nil, "参数完整的简单任务不多问")
+            check(
+                AssistantRuntime.missingCriticalDetailsQuestion(
+                    for: "创建会议，今天下午3点到4点，单次会议"
+                ) == nil,
+                "参数完整的会议无需重复询问"
             )
             let approvedReview = MiMoAssistantClient.parsePlanReview(
                 #"{"status":"approved","summary":"按类型整理并检查结果","finalPrompt":"只整理下载目录，完成后检查分类"}"#,

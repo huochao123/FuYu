@@ -848,6 +848,11 @@ struct SettingsView: View {
                 }
                 .tint(preferences.requireActionApproval ? .accentColor : .orange)
                 Divider()
+                Toggle(isOn: $preferences.voiceActionApproval) {
+                    settingLabel("允许语音确认", detail: "授权卡出现后，说“允许执行”或“取消执行”")
+                }
+                .disabled(!preferences.requireActionApproval)
+                Divider()
                 settingLabel("错误自动隐藏", detail: "普通错误提示 4 秒后收起，不再卡住回复条")
                 Divider()
                 settingLabel("本地模型", detail: "Ollama / LM Studio 默认连接 127.0.0.1，不需要上传密钥")

@@ -44,6 +44,7 @@ actor MiMoAssistantClient {
     private let session: URLSession
     private var memory: [ChatMessage] = []
     private var loadedPersistentMemory = false
+    private var actionAwaitingVerifiedResult = false
 
     init() {
         let config = URLSessionConfiguration.ephemeral
@@ -60,6 +61,8 @@ actor MiMoAssistantClient {
         用户明确保存的永久习惯（优先遵守，但不得把它当成当前任务）：
         \(profile.permanentHabitPrompt)
         人格与关系设定：\(profile.personaPrompt)
+        当前真实运行模型：\(profile.model.provider.title) / \(profile.model.model)。用户问模型时直接准确回答。
+        跨启动对话记忆：\(profile.persistentMemory ? "已开启" : "未开启")。不得声称与这个真实设置相反。
         你必须只输出一个 JSON 对象，不要使用 Markdown。
         如果用户只是询问、聊天或需要解释，输出：
         {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句自然短话，最多40字；除纯代码或纯链接外必须填写"}
@@ -67,6 +70,8 @@ actor MiMoAssistantClient {
         {"kind":"action","title":"短标题","detail":"目标、范围、主要风险和完成标准，最多80字","hermesPrompt":"给 Hermes 的完整任务委派：结合当前上下文写清目标、约束、可检查的完成标准；允许 Hermes 先检查环境和规划，再执行并验证结果，不要把用户原话机械照抄"}
         普通 reply 禁止使用“我现在帮你打开、正在执行、马上替你完成”等会让用户误以为操作已发生的话术。
         没有真实工具结果时，禁止声称 Mac 操作已经完成。
+        上下文中只有明确以“实际执行成功：”开头的记录才证明任务成功；“计划执行”或内部工具调用不代表已经执行。
+        不知道退出、崩溃或失败原因时必须说无法确认，不得随意猜测 Hermes、内存或误操作。
         删除、发送、购买、发布、修改系统安全设置等高风险操作必须准确说明风险。
         不要把“怎么做”之类的知识问题误判成操作。
         对复杂任务先理解用户真正目标，再交给 Hermes 自主检查、规划、执行和验证；信息不足且会明显改变结果时应先向用户提问，不能擅自猜测。
@@ -79,7 +84,16 @@ actor MiMoAssistantClient {
             includeContext: true
         )
         let parsedDecision = try Self.parseDecision(content)
-        let decision = Self.reconcileDecision(parsedDecision, userText: userText)
+        var decision = Self.reconcileDecision(parsedDecision, userText: userText)
+        if case let .reply(text, _) = decision,
+           actionAwaitingVerifiedResult,
+           Self.claimsVerifiedSuccess(text) {
+            decision = .reply(
+                text: "我还没有收到 Hermes 的真实成功结果，因此现在不能确认任务已经完成。你可以让我重新执行或检查任务状态。",
+                spoken: "我还没有收到真实执行结果，暂时不能确认已经完成。"
+            )
+        }
+        if case .action = decision { actionAwaitingVerifiedResult = true }
         if profile.contextEnabled {
             memory.append(.init(role: "user", content: userText))
             let assistantText: String
@@ -95,6 +109,7 @@ actor MiMoAssistantClient {
     }
 
     func recordActionResult(title: String, result: String, succeeded: Bool, profile: AssistantProfile) throws {
+        actionAwaitingVerifiedResult = false
         guard profile.contextEnabled else { return }
         let prefix = succeeded ? "实际执行成功" : "实际执行失败"
         memory.append(.init(role: "assistant", content: "\(prefix)：\(title)。\(result)"))
@@ -155,6 +170,35 @@ actor MiMoAssistantClient {
             includeContext: false
         )
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func makeNaturalSpokenSummary(for fullText: String, profile: AssistantProfile) async throws -> String {
+        let systemPrompt = """
+        把工具或助手返回结果改写成一句像真人说的自然中文，用于语音播报。
+        只输出要说的话，不要 JSON、Markdown、列表或前缀。
+        15 到 42 个汉字，先说结论；不要朗读网址、会议号、ID、追踪码、英文参数、文件路径或长数字。
+        必要时说“详细信息我放在屏幕上了”。失败就自然说明失败，不得把失败改成成功。
+        保持下面的人格和表达方式，但不要添加虚构事实：
+        \(profile.personaPrompt)
+        """
+        let result = try await requestCompletion(
+            systemPrompt: systemPrompt,
+            userText: String(fullText.prefix(4_000)),
+            profile: profile,
+            includeContext: false
+        )
+        return Self.cleanSpokenSummary(result)
+    }
+
+    static func cleanSpokenSummary(_ text: String) -> String {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count > 1 {
+            value.removeFirst()
+            value.removeLast()
+        }
+        value = value.replacingOccurrences(of: "https?://\\S+", with: "", options: .regularExpression)
+        value = value.replacingOccurrences(of: "[A-Za-z0-9_-]{10,}", with: "", options: .regularExpression)
+        return String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
     }
 
     func clearMemory() throws {
@@ -240,6 +284,9 @@ actor MiMoAssistantClient {
         guard !trimmed.isEmpty else {
             return .reply(text: "我没有收到完整回答，请再说一次。", spoken: nil)
         }
+        if containsInternalToolMarkup(trimmed) {
+            return .reply(text: "我识别到这是一个操作请求，需要交给执行流程处理。", spoken: nil)
+        }
         let jsonText: String
         if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first <= last {
             jsonText = String(trimmed[first...last])
@@ -295,7 +342,8 @@ actor MiMoAssistantClient {
         if knowledgePrefixes.contains(where: value.hasPrefix) { return false }
         let actionVerbs = [
             "打开", "关闭", "启动", "退出", "创建", "新建", "删除", "移动", "复制", "重命名",
-            "整理", "发送", "点击", "切换", "设置", "调高", "调低", "搜索", "下载", "安装", "卸载"
+            "整理", "发送", "点击", "切换", "设置", "调高", "调低", "搜索", "下载", "安装", "卸载",
+            "开会", "开一个", "锁屏", "锁定屏幕", "预约", "发布", "购买"
         ]
         let macTargets = [
             "文件", "文件夹", "访达", "finder", "safari", "浏览器", "应用", "软件", "桌面",
@@ -306,6 +354,20 @@ actor MiMoAssistantClient {
         let hasTarget = macTargets.contains(where: lower.contains)
         let directRequest = lower.hasPrefix("帮我") || lower.hasPrefix("替我") || lower.hasPrefix("给我")
         return hasVerb && (hasTarget || directRequest)
+    }
+
+    static func containsInternalToolMarkup(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("<tool_call>")
+            || lower.contains("</tool_call>")
+            || lower.contains("<function=")
+            || lower.contains("<parameter=")
+    }
+
+    static func claimsVerifiedSuccess(_ text: String) -> Bool {
+        let compact = text.replacingOccurrences(of: " ", with: "")
+        let claims = ["已经执行成功", "已经创建成功", "已创建成功", "已经完成", "操作已完成", "任务已完成", "成功创建"]
+        return claims.contains(where: compact.contains)
     }
 
     private static func errorMessage(from data: Data) -> String {
@@ -320,6 +382,13 @@ actor MiMoAssistantClient {
         loadedPersistentMemory = true
         guard FileManager.default.fileExists(atPath: Self.memoryURL.path) else { return }
         memory = try JSONDecoder().decode([ChatMessage].self, from: Data(contentsOf: Self.memoryURL))
+        let lastPlan = memory.lastIndex(where: { $0.role == "assistant" && $0.content.hasPrefix("计划执行：") })
+        let lastResult = memory.lastIndex(where: {
+            $0.role == "assistant" && ($0.content.hasPrefix("实际执行成功：") || $0.content.hasPrefix("实际执行失败："))
+        })
+        actionAwaitingVerifiedResult = lastPlan.map { planIndex in
+            lastResult.map { planIndex > $0 } ?? true
+        } ?? false
     }
 
     private func persistMemory() throws {

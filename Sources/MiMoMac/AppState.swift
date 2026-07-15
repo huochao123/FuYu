@@ -37,12 +37,19 @@ final class AppState: ObservableObject {
         }
     }
 
-    struct ConversationItem: Identifiable, Equatable {
-        enum Kind: Equatable { case user, assistant, action, error }
-        let id = UUID()
+    struct ConversationItem: Identifiable, Equatable, Codable {
+        enum Kind: String, Equatable, Codable { case user, assistant, action, error }
+        let id: UUID
         let kind: Kind
         let text: String
-        let createdAt = Date()
+        let createdAt: Date
+
+        init(id: UUID = UUID(), kind: Kind, text: String, createdAt: Date = Date()) {
+            self.id = id
+            self.kind = kind
+            self.text = text
+            self.createdAt = createdAt
+        }
     }
 
     @Published var isExpanded = false
@@ -68,6 +75,17 @@ final class AppState: ObservableObject {
     private var replyCollapseTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
     private var isRunningDemo = false
+    private let conversationHistoryURL: URL
+
+    init(historyURL: URL? = nil) {
+        conversationHistoryURL = historyURL ?? Self.defaultConversationHistoryURL
+        if let stored = Self.loadConversationHistory(from: conversationHistoryURL), !stored.isEmpty {
+            conversation = stored
+        } else {
+            conversation = Self.importLegacyModelHistory()
+            persistConversationHistory()
+        }
+    }
 
     var phaseColor: Color {
         switch phase {
@@ -99,14 +117,14 @@ final class AppState: ObservableObject {
         onVoiceSubmitRequested?()
     }
 
-    func beginListening() {
+    func beginListening(preservingApproval: Bool = false) {
         demoTask?.cancel()
         replyCollapseTask?.cancel()
         errorDismissTask?.cancel()
-        showPermission = false
+        if !preservingApproval { showPermission = false }
         isExpanded = true
         phase = .listening
-        transcript = "我在听…"
+        transcript = preservingApproval ? "请说“允许执行”或“取消执行”" : "我在听…"
         progress = 0
         steps = []
     }
@@ -279,7 +297,62 @@ final class AppState: ObservableObject {
         guard !value.isEmpty else { return }
         if conversation.last?.kind == kind, conversation.last?.text == value { return }
         conversation.append(.init(kind: kind, text: value))
-        conversation = Array(conversation.suffix(40))
+        conversation = Array(conversation.suffix(500))
+        persistConversationHistory()
+    }
+
+    private func persistConversationHistory() {
+        do {
+            let directory = conversationHistoryURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(conversation).write(to: conversationHistoryURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: conversationHistoryURL.path)
+        } catch {
+            // The current session remains readable; the next message retries persistence.
+        }
+    }
+
+    private struct LegacyMessage: Decodable {
+        let role: String
+        let content: String
+    }
+
+    private static func loadConversationHistory(from url: URL) -> [ConversationItem]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode([ConversationItem].self, from: data)
+    }
+
+    private static func importLegacyModelHistory() -> [ConversationItem] {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FuYu", isDirectory: true)
+            .appendingPathComponent("conversation-memory.json")
+        guard let data = try? Data(contentsOf: url),
+              let messages = try? JSONDecoder().decode([LegacyMessage].self, from: data) else { return [] }
+        return messages.suffix(200).map { message in
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let kind: ConversationItem.Kind
+            if message.role == "user" {
+                kind = .user
+            } else if content.hasPrefix("实际执行失败") {
+                kind = .error
+            } else if content.hasPrefix("计划执行") || content.hasPrefix("实际执行成功") {
+                kind = .action
+            } else if content.contains("<tool_call>") || content.contains("<function=") {
+                kind = .error
+            } else {
+                kind = .assistant
+            }
+            let displayText = (content.contains("<tool_call>") || content.contains("<function="))
+                ? "旧记录：模型曾返回未解析的内部工具调用，未确认实际执行。"
+                : content
+            return .init(kind: kind, text: displayText)
+        }
+    }
+
+    private static var defaultConversationHistoryURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FuYu", isDirectory: true)
+            .appendingPathComponent("conversation-history.json")
     }
 
     func runDemo() {

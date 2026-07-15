@@ -283,6 +283,7 @@ final class AssistantPreferences: ObservableObject {
         static let pushToTalkShortcut = "assistantPushToTalkShortcut"
         static let floatingPlacement = "assistantFloatingPlacement"
         static let requireActionApproval = "assistantRequireActionApproval"
+        static let voiceActionApproval = "assistantVoiceActionApproval"
         static let personaEnabled = "assistantPersonaEnabled"
         static let personaRelationship = "assistantPersonaRelationship"
         static let personaName = "assistantPersonaName"
@@ -328,6 +329,7 @@ final class AssistantPreferences: ObservableObject {
     @Published var pushToTalkShortcut: PushToTalkShortcut { didSet { defaults.set(pushToTalkShortcut.rawValue, forKey: Key.pushToTalkShortcut) } }
     @Published var floatingPlacement: FloatingPlacement { didSet { defaults.set(floatingPlacement.rawValue, forKey: Key.floatingPlacement) } }
     @Published var requireActionApproval: Bool { didSet { defaults.set(requireActionApproval, forKey: Key.requireActionApproval) } }
+    @Published var voiceActionApproval: Bool { didSet { defaults.set(voiceActionApproval, forKey: Key.voiceActionApproval) } }
     @Published var personaEnabled: Bool { didSet { defaults.set(personaEnabled, forKey: Key.personaEnabled) } }
     @Published var personaRelationship: PersonaRelationship { didSet { defaults.set(personaRelationship.rawValue, forKey: Key.personaRelationship) } }
     @Published var personaName: String { didSet { defaults.set(String(personaName.prefix(40)), forKey: Key.personaName) } }
@@ -374,6 +376,7 @@ final class AssistantPreferences: ObservableObject {
         pushToTalkShortcut = PushToTalkShortcut(rawValue: defaults.string(forKey: Key.pushToTalkShortcut) ?? "fnHold") ?? .fnHold
         floatingPlacement = FloatingPlacement(rawValue: defaults.string(forKey: Key.floatingPlacement) ?? "notch") ?? .notch
         requireActionApproval = defaults.object(forKey: Key.requireActionApproval) as? Bool ?? true
+        voiceActionApproval = defaults.object(forKey: Key.voiceActionApproval) as? Bool ?? true
         personaEnabled = defaults.object(forKey: Key.personaEnabled) as? Bool ?? false
         personaRelationship = PersonaRelationship(rawValue: defaults.string(forKey: Key.personaRelationship) ?? "friend") ?? .friend
         personaName = defaults.string(forKey: Key.personaName) ?? ""
@@ -473,7 +476,13 @@ final class AssistantPreferences: ObservableObject {
     }
 
     var personaPrompt: String {
-        guard personaEnabled else { return "未启用角色扮演，保持自然、可靠的 AI 助手身份。" }
+        guard personaEnabled else {
+            return """
+            默认人格是一位温柔、认真、可靠的女性秘书助理。
+            说话自然亲切、有分寸，不使用生硬的客服腔；办事前先理解目标并确认关键参数，执行后只汇报真实结果。
+            遇到技术日志、英文参数或长编号时先理解含义，再用自然中文说明，不原样朗读。
+            """
+        }
         return """
         已启用角色扮演。
         角色名称：\(personaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "由上下文自然决定" : personaName)
@@ -524,13 +533,53 @@ final class AssistantPreferences: ObservableObject {
     func spokenText(fullText: String, suggested: String?) -> String? {
         switch voicePolicy {
         case .never: return nil
-        case .always: return fullText
+        case .always:
+            return speechFriendlyText(fullText, allowSummary: false)
         case .smart:
-            let candidate = suggested?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let candidate = suggested.flatMap { speechFriendlyText($0, allowSummary: false) }
             if let candidate, !candidate.isEmpty, isSuitableForSpeech(candidate) { return candidate }
-            if isSuitableForSpeech(fullText) { return fullText }
-            return smartSpeechSummary(fullText)
+            let cleaned = speechFriendlyText(fullText, allowSummary: true)
+            if let cleaned, isSuitableForSpeech(cleaned) { return cleaned }
+            return smartSpeechSummary(cleaned ?? fullText)
         }
+    }
+
+    private func speechFriendlyText(_ text: String, allowSummary: Bool) -> String? {
+        if text.contains("实际执行失败") || text.contains("执行失败") {
+            return "任务没有完成，具体原因我放在屏幕上了。"
+        }
+        var value = text
+            .replacingOccurrences(of: "```[\\s\\S]*?```", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "https?://\\S+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[A-Za-z][A-Za-z0-9_-]{7,}", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\b\\d{7,}\\b", with: " ", options: .regularExpression)
+        let blockedLabels = ["trace", "rpcuuid", "uuid", "会议id", "加入链接", "追踪信息", "参数", "token"]
+        value = value
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { line in
+                let lower = line.lowercased()
+                return !blockedLabels.contains(where: lower.contains)
+            }
+            .joined(separator: "，")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.contains("http://") || text.contains("https://") {
+            let linkOnlyPhrases = ["详情见", "查看链接", "请看链接", "网址", "链接"]
+            if linkOnlyPhrases.contains(value) { return nil }
+        }
+        let chineseCount = value.unicodeScalars.filter { (0x4E00...0x9FFF).contains(Int($0.value)) }.count
+        let latinCount = value.unicodeScalars.filter { CharacterSet.letters.contains($0) && !(0x4E00...0x9FFF).contains(Int($0.value)) }.count
+        if value.isEmpty || (latinCount > chineseCount && latinCount > 6) {
+            if text.contains("创建成功") {
+                return "已经创建好了，详细信息我放在屏幕上了。"
+            }
+            if text.contains("成功") || text.contains("完成") {
+                return "任务已经完成，详细信息我放在屏幕上了。"
+            }
+            return "我收到了一段技术信息，已经整理在屏幕上了。"
+        }
+        if allowSummary, value.count > 52 { return smartSpeechSummary(value) }
+        return value
     }
 
     private func smartSpeechSummary(_ text: String) -> String? {

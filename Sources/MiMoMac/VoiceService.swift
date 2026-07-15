@@ -26,6 +26,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var recordingURL: URL?
     private var recoveryTask: Task<Void, Never>?
     private var recognitionRecoveryAttempts = 0
+    private var listeningForApproval = false
 
     init(state: AppState, preferences: AssistantPreferences) {
         self.state = state
@@ -58,6 +59,13 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func startListening() async {
         recognitionRecoveryAttempts = 0
+        listeningForApproval = false
+        await beginListening()
+    }
+
+    func startListeningForApproval() async {
+        recognitionRecoveryAttempts = 0
+        listeningForApproval = true
         await beginListening()
     }
 
@@ -113,7 +121,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
-            state.beginListening()
+            state.beginListening(preservingApproval: listeningForApproval)
             scheduleInitialSilenceTimeout()
         } catch {
             stopRecognitionResources()
@@ -197,6 +205,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recoveryTask?.cancel()
         recoveryTask = nil
         recognitionRecoveryAttempts = 0
+        listeningForApproval = false
         stopRecognitionResources()
         cleanupRecording()
         cancelSpeech()
