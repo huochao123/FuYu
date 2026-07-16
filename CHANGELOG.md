@@ -1,5 +1,20 @@
 # 更新日志 / Changelog
 
+## v0.7.0 — 2026-07-16
+
+- 重构浮屿的决策核心：回答、本机工具调用与 Hermes 专家委派成为三种明确协议，不再把普通 Mac 语句事后强制升级为 Hermes。
+- 建立统一本机工具注册表，MiMo 能选择九项电脑管家、音量、亮度与能力查询；实际执行仍由浮屿本机完成。
+- “下载文件夹分析下”“大文件多吗”等自然说法直接进入本机工具；顺序变化不再导致复杂任务预审。
+- “为什么刚才进入预审并超时”等运行原因追问由本机解释层处理，只解释、不启动工具、不调用 Hermes。
+- 清理和移动继续遵循扫描、收益与风险说明、明确确认、执行后验证；“去吧”可在已经显示授权卡时承接当前操作。
+- 修复旧网络请求取消后显示假“操作已取消”的问题；模型超时改为短请求、一次短重试和独立提示，本机能力不受模型服务中断影响。
+- 缩小即时上下文窗口并用相关历史检索补充旧记录，避免同一段会话被重复发送给模型。
+- 新增 Agent 工具、数字参数、解释分流、取消与超时语义的自动化回归；九项电脑管家真机扫描与临时文件移动验证通过。
+
+- Rebuilt FuYu around explicit reply, local-tool, and Hermes-expert decisions.
+- Local Mac tools now run independently from model availability, with confirmation retained for file changes.
+- Added deterministic explanation routing, short model timeouts, cancellation handling, and Agent protocol regression tests.
+
 ## v0.6.2 — 2026-07-16
 
 - 记忆设置页改为四层可视化总览：即时对话、当前任务、会话归档和永久习惯。

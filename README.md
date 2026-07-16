@@ -25,7 +25,7 @@
 
 ## 不只是一个聊天窗口
 
-浮屿是一款面向 Apple Silicon Mac 的原生助手。它可以停留在刘海下方，通过语音、快捷键、文字或飞书接收要求；简单的电脑维护由本机直接完成，复杂的跨应用任务再交给 Hermes 规划和验证。
+浮屿是一款面向 Apple Silicon Mac 的原生助手。它可以停留在刘海下方，通过语音、快捷键、文字或飞书接收要求；MiMo 负责理解和选择能力，电脑维护由浮屿本机工具直接完成，只有本机工具覆盖不到的复杂跨应用任务才交给 Hermes。
 
 浮屿知道自己是一款以 Mac 为核心的本机助手，也会按当前电脑动态了解自己的能力。电脑管家的真实检测结果会同步到 AI 上下文，因此检测后可以直接问“哪个最需要处理”“这条建议有什么好处”或“确认执行”，无需重新描述结果。
 
@@ -36,6 +36,16 @@
 | 可随时关闭识别，双击悬浮入口停止误识别 | 持续高负载与发热进程判断 | 修改 Mac 前保留本机确认 |
 
 ## 核心能力
+
+### 本机优先的 Agent 核心
+
+浮屿不是把所有命令转发给 Hermes 的外壳。它使用统一决策协议区分三种结果：直接回答、调用浮屿本机工具、委派 Hermes 专家任务。MiMo 可以看到真实工具清单和最近检测结果；本机快速路由则保证常见 Mac 操作不必等待云端模型。
+
+- “下载文件夹分析下”“大文件多吗”“检查启动项”直接调用本机扫描器。
+- 工具结果同时进入状态屏、聊天记录和后续 AI 上下文，可以继续问原因、收益或下一步。
+- “为什么刚才超时”只读取运行记录并解释，不会再次执行或进入复杂任务预审。
+- 云端模型超时时，本机电脑管家、系统控制、监控通知和已有结果仍可使用。
+- 清理、移动等修改操作必须先展示真实扫描结果、收益与风险，再等待明确确认。
 
 ### 一个真正可用的主界面
 
@@ -162,6 +172,7 @@ scripts/create-installer.sh
 
 ### Highlights
 
+- Explicit Agent decisions for direct replies, native Mac tools, and optional Hermes expert delegation; common local actions do not wait for Hermes.
 - Native SwiftUI + AppKit experience with glass materials and three main-window themes.
 - Local Mac Care: health inspection, safe junk preview, Downloads organization preview, large files, duplicates, login items, hot processes, leftovers, and optimization advice.
 - Full-card hit targets with hover, press, running, completion, and failure feedback.

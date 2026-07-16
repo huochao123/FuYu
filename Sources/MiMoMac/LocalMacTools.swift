@@ -21,6 +21,10 @@ enum LocalCommandRouter {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else { return nil }
 
+        // Explanations are handled by the agent's dialogue layer. Words such
+        // as “执行” inside a why-question must never be interpreted as a new action.
+        if AgentIntentEngine.isExplanationRequest(value) { return nil }
+
         if ["你是谁", "你是什么助手", "你能做什么", "你会做什么", "你的能力", "你有什么功能"].contains(where: value.contains) {
             return .capabilities
         }
@@ -46,6 +50,10 @@ enum LocalCommandRouter {
             if value.contains("最高") { return .brightness(.set(100)) }
             if value.contains("最低") { return .brightness(.set(0)) }
         }
+
+        let mentionsDownloads = value.contains("下载") && (value.contains("文件夹") || value.contains("目录") || value.contains("东西"))
+        let asksToInspect = ["分析", "看看", "看下", "检查", "统计", "有什么", "情况", "概览"].contains(where: value.contains)
+        if mentionsDownloads, asksToInspect { return .scan(.organize) }
 
         if ["执行建议", "确认优化", "开始优化", "帮我优化", "清理掉", "确认清理"].contains(where: value.contains) {
             if value.contains("整理") { return .applyLatest(.organize) }

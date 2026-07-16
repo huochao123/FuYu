@@ -115,7 +115,7 @@ final class AssistantRuntime {
 
         if preferences.voiceActionApproval, state.showPermission {
             let compact = Self.normalizedApprovalPhrase(cleaned)
-            let approvePhrases = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧"]
+            let approvePhrases = ["允许执行", "确认执行", "同意执行", "可以执行", "执行吧", "继续执行", "去吧"]
             let denyPhrases = ["取消执行", "不要执行", "拒绝执行", "不允许执行", "取消", "算了"]
             if denyPhrases.contains(where: compact.contains) {
                 state.recordActionStatus(isVoice ? "用户通过语音取消了操作" : "用户通过文字取消了操作", failed: true)
@@ -171,11 +171,19 @@ final class AssistantRuntime {
             return
         }
 
-        if let localCommand = LocalCommandRouter.command(for: cleaned) {
+        switch AgentIntentEngine.route(for: cleaned, conversation: state.conversation) {
+        case let .reply(reply):
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            deliverReply(reply, suggestedSpoken: nil, shouldSpeak: shouldSpeak)
+            return
+        case let .local(localCommand):
             cancelCurrentWork()
             state.beginThinking(userText: cleaned)
             handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
             return
+        case .model:
+            break
         }
 
         let effectiveRequest: String
@@ -226,7 +234,14 @@ final class AssistantRuntime {
                 case let .reply(text, spoken):
                     self.pendingAction = nil
                     self.deliverReply(text, suggestedSpoken: spoken, shouldSpeak: shouldSpeak)
-                case let .action(title, detail, prompt):
+                case let .tool(call):
+                    guard let localCommand = AgentToolRegistry.localCommand(for: call) else {
+                        self.state.presentError("浮屿没有识别出这个本机工具的参数，未执行任何操作。")
+                        return
+                    }
+                    self.state.recordActionStatus("浮屿选择本机工具：\(call.id.rawValue)")
+                    self.handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
+                case let .hermes(title, detail, prompt):
                     guard self.hermes.isAvailable else {
                         let message = AssistantServiceError.hermesUnavailable.localizedDescription
                         self.state.recordActionStatus("未执行：\(title)\n\(message)", failed: true)
@@ -280,6 +295,10 @@ final class AssistantRuntime {
                 return
             } catch AssistantServiceError.cancelled {
                 return
+            } catch AssistantServiceError.modelTimeout {
+                let message = AssistantServiceError.modelTimeout.localizedDescription
+                self.state.recordActionStatus(message, failed: true)
+                self.deliverReply(message, suggestedSpoken: "模型响应超时，本机工具仍然可以直接使用。", shouldSpeak: shouldSpeak)
             } catch {
                 self.state.presentError(error.localizedDescription)
             }

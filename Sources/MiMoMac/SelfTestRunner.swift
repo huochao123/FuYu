@@ -193,8 +193,30 @@ enum SelfTestRunner {
                 && LocalCommandRouter.command(for: "检查一下启动项") == .scan(.loginItems)
                 && LocalCommandRouter.command(for: "删除重复文件") == .scan(.duplicates)
                 && LocalCommandRouter.command(for: "你能做什么") == .capabilities
-                && LocalCommandRouter.command(for: "帮我分析下载文件夹") == .scan(.organize),
+                && LocalCommandRouter.command(for: "帮我分析下载文件夹") == .scan(.organize)
+                && LocalCommandRouter.command(for: "下载文件夹分析下") == .scan(.organize),
             "基础 Mac 指令优先路由到浮屿本机能力且重复文件不直接删除"
+        )
+        let explanationFixture: [AppState.ConversationItem] = [
+            .init(kind: .action, text: "复杂任务预审：正在向 Hermes 获取只读方案"),
+            .init(kind: .error, text: "模型响应超时")
+        ]
+        if case let .reply(explanation) = AgentIntentEngine.route(
+            for: "那你为啥执行复杂任务预审然后超时",
+            conversation: explanationFixture
+        ) {
+            check(
+                explanation.contains("不应该再次启动任何工具或 Hermes")
+                    && explanation.contains("请求超时"),
+                "运行原因追问只解释且不重复执行"
+            )
+        } else {
+            check(false, "运行原因追问只解释且不重复执行")
+        }
+        check(
+            AgentToolRegistry.localCommand(for: .init(id: .organizeDownloads, arguments: [:])) == .scan(.organize)
+                && AgentToolRegistry.localCommand(for: .init(id: .volume, arguments: ["action": "set", "value": "36"])) == .volume(.set(36)),
+            "统一 Agent 工具注册表映射真实本机能力"
         )
         let unavailableManifest = LocalMacCapabilityManifest(brightnessAvailable: false).prompt
         check(
@@ -299,20 +321,27 @@ enum SelfTestRunner {
         do {
             let reply = try MiMoAssistantClient.parseDecision(#"{"kind":"reply","reply":"这里是完整回答","spokenReply":"你好"}"#)
             check(reply == .reply(text: "这里是完整回答", spoken: "你好"), "普通回答解析")
-            let action = try MiMoAssistantClient.parseDecision(
-                #"{"kind":"action","title":"打开访达","detail":"只打开访达","hermesPrompt":"打开 Finder"}"#
+            let tool = try MiMoAssistantClient.parseDecision(
+                #"{"kind":"tool","tool":"mac.downloads_analyze","arguments":{}}"#
             )
             check(
-                action == .action(title: "打开访达", detail: "只打开访达", hermesPrompt: "打开 Finder"),
-                "Mac 操作规划解析"
+                tool == .tool(.init(id: .organizeDownloads, arguments: [:])),
+                "本机 Agent 工具调用解析"
             )
-            let incompleteAction = try MiMoAssistantClient.parseDecision(
-                "```json\n{\"kind\":\"action\",\"hermesPrompt\":\"打开 Safari 并检查首页\"}\n```"
+            let numericTool = try MiMoAssistantClient.parseDecision(
+                #"{"kind":"tool","tool":"mac.volume","arguments":{"action":"set","value":36}}"#
             )
-            if case let .action(_, detail, prompt) = incompleteAction {
-                check(detail.contains("Hermes") && prompt.contains("Safari"), "不完整 JSON 操作回复自动补全")
+            check(
+                numericTool == .tool(.init(id: .volume, arguments: ["action": "set", "value": "36"])),
+                "模型数字参数可稳定转换为本机工具参数"
+            )
+            let hermes = try MiMoAssistantClient.parseDecision(
+                "```json\n{\"kind\":\"hermes\",\"hermesPrompt\":\"打开 Safari 并检查首页\"}\n```"
+            )
+            if case let .hermes(_, detail, prompt) = hermes {
+                check(detail.contains("Hermes") && prompt.contains("Safari"), "Hermes 专家委派解析")
             } else {
-                check(false, "不完整 JSON 操作回复自动补全")
+                check(false, "Hermes 专家委派解析")
             }
             let alternateReply = try MiMoAssistantClient.parseDecision(#"{"content":"这是兼容回复"}"#)
             check(alternateReply == .reply(text: "这是兼容回复", spoken: nil), "非标准模型回复兼容解析")
@@ -327,24 +356,28 @@ enum SelfTestRunner {
                     && !MiMoAssistantClient.claimsVerifiedSuccess("我准备创建会议"),
                 "无真实结果时识别并拦截成功声明"
             )
+            if case .cancelled? = MiMoAssistantClient.transportError(for: .cancelled),
+               case .modelTimeout? = MiMoAssistantClient.transportError(for: .timedOut) {
+                check(true, "取消旧请求不会显示成失败且超时有独立提示")
+            } else {
+                check(false, "取消旧请求不会显示成失败且超时有独立提示")
+            }
             let corrected = MiMoAssistantClient.reconcileDecision(
                 .reply(text: "好的，我来帮你打开。", spoken: "马上为你打开"),
                 userText: "帮我打开 Safari"
             )
-            if case .action = corrected {
-                check(true, "Mac 操作意图二次校验")
-            } else {
-                check(false, "Mac 操作意图二次校验")
-            }
+            check(
+                corrected == .reply(text: "好的，我来帮你打开。", spoken: "马上为你打开"),
+                "普通回复不会再被自动升级为 Hermes"
+            )
             let genericAppAction = MiMoAssistantClient.reconcileDecision(
                 .reply(text: "需要交给执行流程", spoken: nil),
                 userText: "打开计算器"
             )
-            if case .action = genericAppAction {
-                check(true, "任意应用的直接打开命令进入执行流程")
-            } else {
-                check(false, "任意应用的直接打开命令进入执行流程")
-            }
+            check(
+                genericAppAction == .reply(text: "需要交给执行流程", spoken: nil),
+                "Hermes 只接受模型明确选择而不是关键词强制升级"
+            )
             let delegation = HermesCommandRunner.delegationPrompt(for: "整理下载目录")
             check(
                 delegation.contains("先理解目标") && delegation.contains("检查当前环境") && delegation.contains("验证结果"),

@@ -406,7 +406,9 @@ final class AppState: ObservableObject {
 
     func conversationContextPrompt(for query: String, includePersistent: Bool = true) -> String {
         guard !conversation.isEmpty else { return "尚无历史对话。" }
-        let recentCount = 20
+        // Keep the active window focused. Older relevant facts are supplied by
+        // the retrieval layer below instead of duplicating a long transcript.
+        let recentCount = 10
         let recentStart = max(0, conversation.count - recentCount)
         let recent = Array(conversation[recentStart...])
         let relevant = includePersistent

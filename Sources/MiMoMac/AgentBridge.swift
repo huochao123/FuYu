@@ -3,7 +3,8 @@ import Security
 
 enum AssistantDecision: Equatable, Sendable {
     case reply(text: String, spoken: String?)
-    case action(title: String, detail: String, hermesPrompt: String)
+    case tool(AgentToolCall)
+    case hermes(title: String, detail: String, prompt: String)
 }
 
 enum ExecutionPlanReview: Equatable, Sendable {
@@ -18,6 +19,7 @@ enum AssistantServiceError: LocalizedError {
     case http(Int, String)
     case hermesUnavailable
     case hermesFailed(String)
+    case modelTimeout
     case cancelled
 
     var errorDescription: String? {
@@ -34,6 +36,8 @@ enum AssistantServiceError: LocalizedError {
             "没有找到 Hermes，请确认 ~/.local/bin/hermes 已安装。"
         case let .hermesFailed(message):
             "Hermes 执行失败：\(message)"
+        case .modelTimeout:
+            "模型响应超时了。本机工具仍然可用，你可以直接让我检查这台 Mac；聊天请求可以稍后重试。"
         case .cancelled:
             "操作已取消。"
         }
@@ -48,8 +52,8 @@ actor MiMoAssistantClient {
 
     init() {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 45
-        config.timeoutIntervalForResource = 60
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 24
         session = URLSession(configuration: config)
     }
 
@@ -73,11 +77,16 @@ actor MiMoAssistantClient {
         人格与关系设定：\(profile.personaPrompt)
         当前真实运行模型：\(profile.model.provider.title) / \(profile.model.model)。用户问模型时直接准确回答。
         跨启动对话记忆：\(profile.persistentMemory ? "已开启" : "未开启")。不得声称与这个真实设置相反。
+        可调用的浮屿本机工具如下。只要这些工具能完成，就必须选择 tool，不得交给 Hermes：
+        \(AgentToolRegistry.modelPrompt)
         你必须只输出一个 JSON 对象，不要使用 Markdown。
         如果用户只是询问、聊天或需要解释，输出：
         {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句自然短话，最多40字；除纯代码或纯链接外必须填写"}
-        如果用户明确要求浮屿当前未提供的跨应用复杂操作，输出：
-        {"kind":"action","title":"短标题","detail":"目标、范围、主要风险和完成标准，最多80字","hermesPrompt":"给 Hermes 的完整任务委派：结合当前上下文写清目标、约束、可检查的完成标准；允许 Hermes 先检查环境和规划，再执行并验证结果，不要把用户原话机械照抄"}
+        如果需要调用浮屿本机工具，输出：
+        {"kind":"tool","tool":"工具 ID","arguments":{"参数名":"字符串值"}}
+        如果用户明确要求浮屿当前没有工具可以完成的跨应用复杂操作，才输出：
+        {"kind":"hermes","title":"短标题","detail":"目标、范围、主要风险和完成标准，最多80字","hermesPrompt":"给 Hermes 的完整任务委派：结合当前上下文写清目标、约束、可检查的完成标准；允许 Hermes 先检查环境和规划，再执行并验证结果，不要把用户原话机械照抄"}
+        “为什么、为啥、怎么回事、刚才为何超时、为什么进入预审”等解释请求只能输出 reply，绝不能输出 tool 或 hermes。
         普通 reply 禁止使用“我现在帮你打开、正在执行、马上替你完成”等会让用户误以为操作已发生的话术。
         没有真实工具结果时，禁止声称 Mac 操作已经完成。
         上下文中只有明确以“实际执行成功：”开头的记录才证明任务成功；“计划执行”或内部工具调用不代表已经执行。
@@ -89,12 +98,24 @@ actor MiMoAssistantClient {
         try loadPersistentMemoryIfNeeded(profile: profile)
         let parsedDecision: AssistantDecision
         do {
-            let content = try await requestCompletion(
-                systemPrompt: systemPrompt,
-                userText: userText,
-                profile: profile,
-                includeContext: true
-            )
+            let content: String
+            do {
+                content = try await requestCompletion(
+                    systemPrompt: systemPrompt,
+                    userText: userText,
+                    profile: profile,
+                    includeContext: false
+                )
+            } catch AssistantServiceError.modelTimeout {
+                // One short retry absorbs transient provider stalls while the
+                // total wait remains far below the former 45-second freeze.
+                content = try await requestCompletion(
+                    systemPrompt: systemPrompt,
+                    userText: userText,
+                    profile: profile,
+                    includeContext: false
+                )
+            }
             parsedDecision = try Self.parseDecision(content)
         } catch AssistantServiceError.invalidResponse {
             let repairPrompt = systemPrompt + """
@@ -118,13 +139,14 @@ actor MiMoAssistantClient {
                 spoken: "我还没有收到真实执行结果，暂时不能确认已经完成。"
             )
         }
-        if case .action = decision { actionAwaitingVerifiedResult = true }
+        if case .hermes = decision { actionAwaitingVerifiedResult = true }
         if profile.contextEnabled {
             memory.append(.init(role: "user", content: userText))
             let assistantText: String
             switch decision {
             case let .reply(text, _): assistantText = text
-            case let .action(title, detail, _): assistantText = "计划执行：\(title)。\(detail)"
+            case let .tool(call): assistantText = "调用本机工具：\(call.id.rawValue)"
+            case let .hermes(title, detail, _): assistantText = "计划交给 Hermes：\(title)。\(detail)"
             }
             memory.append(.init(role: "assistant", content: assistantText))
             memory = Array(memory.suffix(max(profile.contextTurns * 2, 4)))
@@ -297,7 +319,14 @@ actor MiMoAssistantClient {
             )
         }
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            if let mapped = Self.transportError(for: error.code) { throw mapped }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { throw AssistantServiceError.invalidResponse }
         guard 200..<300 ~= http.statusCode else {
             throw AssistantServiceError.http(http.statusCode, Self.errorMessage(from: data))
@@ -339,11 +368,20 @@ actor MiMoAssistantClient {
         }
 
         switch wire.kind?.lowercased() {
-        case "action":
+        case "tool":
+            guard let rawTool = wire.tool?.nonEmpty,
+                  let tool = AgentToolID(rawValue: rawTool) else {
+                return .reply(text: "这个本机工具目前不可用，我没有执行任何操作。", spoken: nil)
+            }
+            return .tool(.init(
+                id: tool,
+                arguments: wire.arguments?.mapValues(\.stringValue) ?? [:]
+            ))
+        case "hermes", "action":
             if let prompt = wire.hermesPrompt?.nonEmpty {
                 let title = wire.title?.nonEmpty ?? String(prompt.prefix(22))
                 let detail = wire.detail?.nonEmpty ?? "交给 Hermes 规划、执行并检查实际结果。"
-                return .action(title: title, detail: detail, hermesPrompt: prompt)
+                return .hermes(title: title, detail: detail, prompt: prompt)
             }
             let fallback = wire.reply?.nonEmpty
                 ?? wire.content?.nonEmpty
@@ -363,15 +401,18 @@ actor MiMoAssistantClient {
         }
     }
 
+    static func transportError(for code: URLError.Code) -> AssistantServiceError? {
+        switch code {
+        case .cancelled: .cancelled
+        case .timedOut: .modelTimeout
+        default: nil
+        }
+    }
+
     static func reconcileDecision(_ decision: AssistantDecision, userText: String) -> AssistantDecision {
-        guard case .reply = decision, looksLikeMacAction(userText) else { return decision }
-        let compact = userText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = String(compact.prefix(22))
-        return .action(
-            title: title.isEmpty ? "执行 Mac 操作" : title,
-            detail: "浮屿识别到这是 Mac 操作，将在执行前确认。",
-            hermesPrompt: compact
-        )
+        // The old implementation upgraded almost every Mac-sounding reply to
+        // Hermes. Tool choice is now explicit; a reply stays a reply.
+        decision
     }
 
     static func looksLikeMacAction(_ text: String) -> Bool {
@@ -712,9 +753,31 @@ private struct WireDecision: Decodable {
     let title: String?
     let detail: String?
     let hermesPrompt: String?
+    let tool: String?
+    let arguments: [String: WireScalar]?
     let content: String?
     let text: String?
     let message: String?
+}
+
+private enum WireScalar: Decodable {
+    case string(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) { self = .string(value); return }
+        if let value = try? container.decode(Int.self) { self = .string(String(value)); return }
+        if let value = try? container.decode(Double.self) { self = .string(String(value)); return }
+        if let value = try? container.decode(Bool.self) { self = .string(value ? "true" : "false"); return }
+        throw DecodingError.typeMismatch(
+            String.self,
+            .init(codingPath: decoder.codingPath, debugDescription: "工具参数只支持字符串、数字或布尔值")
+        )
+    }
+
+    var stringValue: String {
+        switch self { case let .string(value): value }
+    }
 }
 
 private struct WirePlanReview: Decodable {
