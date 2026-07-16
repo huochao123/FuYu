@@ -1,5 +1,23 @@
 # 更新日志 / Changelog
 
+## v0.5.1 — 2026-07-16
+
+- 电脑管家卡片改为整卡点击，新增悬停发光、按压缩放、高光反馈以及明确的开始、停止和完成状态。
+- 检测期间再次点击当前卡片可停止；点击其他工具会显示正在进行的任务，不再无声忽略操作。
+- 状态总览升级为电脑管家的主屏幕：待机时显示 Mac 实时状态，运行时原地切换为进度屏，完成后直接显示结果与下一步操作。
+- 清理确认、Hermes 操作授权、取消与返回总览均可在状态屏中完成，不必切换到聊天页面。
+- 调整视觉比例，扩大状态屏并压缩九个功能按钮，让屏幕成为信息主角、按钮成为清晰的控制区。
+- 设置中心统一为主界面的深海液态玻璃风格，按钮加入一致的按压、亮度和弹性动画反馈。
+- 悬浮气泡、授权、停止和历史等关键按钮补齐即时按压动画。
+- 重做 GitHub 项目首页，更新真实主界面和设置截图，按产品能力、隐私、安装与开源组件重新组织内容。
+
+- Made every Mac Care card fully clickable with hover glow, press scaling, highlight feedback, and explicit start/stop/completion states.
+- The dashboard now acts as the Mac Care screen: live metrics while idle, in-place progress while running, and results plus next actions when complete.
+- Cleanup confirmation and action approval can be completed directly in the dashboard without switching to chat.
+- Rebalanced the layout around a larger status screen and smaller tool controls.
+- Unified Settings with the main window's deep-ocean glass language and consistent button motion.
+- Rebuilt the GitHub landing page around the current product and real screenshots.
+
 ## v0.5.0 — 2026-07-16
 
 - 新增完整主界面：声音能量联动光场、共享对话与电脑管家控制台。

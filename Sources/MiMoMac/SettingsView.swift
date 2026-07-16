@@ -39,6 +39,7 @@ private final class SettingsViewState: ObservableObject {
     @Published var tavernPreview: TavernImportPreview?
     @Published var isTesting = false
     @Published var showClearConfirmation = false
+    @Published var hoveredSection: SettingsSection?
 }
 
 struct SettingsView: View {
@@ -60,6 +61,7 @@ struct SettingsView: View {
                     pageHeader
                     pageContent
                         .id(viewState.selection)
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
                 .padding(26)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,12 +69,17 @@ struct SettingsView: View {
         }
         .frame(width: 720, height: 540)
         .background(
-            LinearGradient(
-                colors: [Color(NSColor.windowBackgroundColor), Color.accentColor.opacity(0.025)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            ZStack {
+                LinearGradient(
+                    colors: [Color(red: 0.025, green: 0.105, blue: 0.12), Color(red: 0.018, green: 0.045, blue: 0.07), .black.opacity(0.96)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                RadialGradient(colors: [.cyan.opacity(0.13), .clear], center: .topLeading, startRadius: 10, endRadius: 480)
+            }
         )
+        .buttonStyle(SettingsGlassButtonStyle())
+        .preferredColorScheme(.dark)
         .alert("清除所有对话记忆？", isPresented: $viewState.showClearConfirmation) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
@@ -137,7 +144,12 @@ struct SettingsView: View {
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SettingsSidebarButtonStyle(selected: viewState.selection == section))
+                    .onHover { hovering in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewState.hoveredSection = hovering ? section : (viewState.hoveredSection == section ? nil : viewState.hoveredSection)
+                        }
+                    }
                 }
             }
 
@@ -154,7 +166,10 @@ struct SettingsView: View {
         }
         .padding(16)
         .frame(width: 172)
-        .background(.primary.opacity(0.025))
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(.white.opacity(0.075)).frame(width: 0.7)
+        }
     }
 
     private var pageHeader: some View {
@@ -214,7 +229,7 @@ struct SettingsView: View {
                     } label: {
                         Label("本机自检", systemImage: "stethoscope")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsGlassButtonStyle(tint: .cyan))
                 }
 
                 Divider()
@@ -263,7 +278,7 @@ struct SettingsView: View {
                             .font(.system(size: 10, weight: .bold))
                             .frame(width: 26, height: 26)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(SettingsGlassButtonStyle(tint: .cyan, prominent: true))
                     .disabled(viewState.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -617,11 +632,11 @@ struct SettingsView: View {
                     Button { importTavernCharacter() } label: {
                         Label("角色卡", systemImage: "person.crop.square")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(SettingsGlassButtonStyle(tint: .purple, prominent: true))
                     Button { importTavernPreset() } label: {
                         Label("提示词预设", systemImage: "text.badge.plus")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SettingsGlassButtonStyle(tint: .purple))
                     Spacer()
                 }
                 Text("支持 Character Card V1/V2 JSON、带嵌入数据的 PNG，以及常见 Chat Completion 预设 JSON。")
@@ -843,6 +858,9 @@ struct SettingsView: View {
                     Button("复制唤醒地址") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString("fuyu://listen", forType: .string)
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                            viewState.chatStatus = "唤醒地址已复制"
+                        }
                     }
                 }
                 Divider()
@@ -945,8 +963,17 @@ struct SettingsView: View {
     private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 13) { content() }
             .padding(15)
-            .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.06), lineWidth: 0.7) }
+            .background(
+                LinearGradient(
+                    colors: [.white.opacity(0.075), .cyan.opacity(0.025), .black.opacity(0.055)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.1), lineWidth: 0.8) }
+            .shadow(color: .black.opacity(0.16), radius: 14, y: 7)
     }
 
     private func settingLabel(_ title: String, detail: String) -> some View {
@@ -988,6 +1015,59 @@ struct SettingsView: View {
             }
             viewState.isTesting = false
         }
+    }
+}
+
+private struct SettingsGlassButtonStyle: ButtonStyle {
+    var tint: Color = .cyan
+    var prominent = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 30)
+            .foregroundStyle(.white.opacity(configuration.isPressed ? 0.78 : 0.94))
+            .background(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(configuration.isPressed ? 0.13 : 0.085),
+                        tint.opacity(configuration.isPressed ? 0.27 : (prominent ? 0.2 : 0.09)),
+                        .black.opacity(0.07)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(tint.opacity(prominent ? 0.4 : 0.19), lineWidth: 0.8)
+            }
+            .shadow(color: tint.opacity(prominent ? 0.17 : 0.07), radius: configuration.isPressed ? 5 : 10, y: configuration.isPressed ? 2 : 5)
+            .scaleEffect(configuration.isPressed ? 0.965 : 1)
+            .brightness(configuration.isPressed ? 0.07 : 0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.68), value: configuration.isPressed)
+    }
+}
+
+private struct SettingsSidebarButtonStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                (selected ? Color.cyan.opacity(0.13) : .white.opacity(configuration.isPressed ? 0.07 : 0)),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(selected ? Color.cyan.opacity(0.24) : .clear, lineWidth: 0.7)
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .brightness(configuration.isPressed ? 0.07 : 0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 

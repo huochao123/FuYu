@@ -344,7 +344,7 @@ private struct VoiceCapsule: View {
                     .frame(width: 30, height: 30)
                     .background(.primary.opacity(0.07), in: Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(FloatingTapButtonStyle())
             .foregroundStyle(.secondary)
             .accessibilityLabel(voiceButtonLabel)
         }
@@ -435,7 +435,7 @@ private struct ConversationBubble: View {
                         .frame(width: 28, height: 28)
                         .background(.primary.opacity(0.07), in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(FloatingTapButtonStyle())
                 .foregroundStyle(.secondary)
                 .help("查看聊天记录")
             }
@@ -480,7 +480,7 @@ private struct ConversationHistoryCard: View {
                         .frame(width: 26, height: 26)
                         .background(.primary.opacity(0.07), in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(FloatingTapButtonStyle())
             }
 
             if state.conversation.isEmpty {
@@ -719,7 +719,7 @@ private struct CompactTaskBubble: View {
                         .frame(width: 28, height: 28)
                         .background(.red.opacity(0.1), in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(FloatingTapButtonStyle())
                 .help("停止任务")
                 .accessibilityLabel("停止任务")
                     .foregroundStyle(.red)
@@ -784,7 +784,7 @@ private struct ApprovalCard: View {
                             .frame(width: 26, height: 26)
                             .background(.primary.opacity(0.07), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(FloatingTapButtonStyle())
                     .help("取消执行")
 
                     Button { state.approveFromUserInteraction() } label: {
@@ -806,7 +806,7 @@ private struct ApprovalCard: View {
                         )
                         .shadow(color: state.phaseColor.opacity(0.3), radius: 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(FloatingTapButtonStyle())
                     .help("仅本次允许")
                 }
             }
@@ -881,6 +881,10 @@ private struct AccentButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(Color.accentColor.opacity(configuration.isPressed ? 0.78 : 1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.965 : 1)
+            .brightness(configuration.isPressed ? 0.08 : 0)
+            .shadow(color: Color.accentColor.opacity(0.2), radius: configuration.isPressed ? 4 : 9, y: configuration.isPressed ? 1 : 4)
+            .animation(.spring(response: 0.2, dampingFraction: 0.68), value: configuration.isPressed)
     }
 }
 
@@ -892,5 +896,18 @@ private struct SoftButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(.primary.opacity(configuration.isPressed ? 0.1 : 0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.965 : 1)
+            .brightness(configuration.isPressed ? 0.07 : 0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.68), value: configuration.isPressed)
+    }
+}
+
+private struct FloatingTapButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .brightness(configuration.isPressed ? 0.13 : 0)
+            .shadow(color: .white.opacity(configuration.isPressed ? 0.18 : 0), radius: 8)
+            .animation(.spring(response: 0.18, dampingFraction: 0.62), value: configuration.isPressed)
     }
 }

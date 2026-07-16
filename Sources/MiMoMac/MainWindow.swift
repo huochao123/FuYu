@@ -12,6 +12,7 @@ final class MainAssistantViewState: ObservableObject {
     @Published var failedTool: String?
     @Published var toolSummary = ""
     @Published var lastReport: MacCareReport?
+    @Published var hoveredManagerTool: String?
     var maintenanceTask: Task<Void, Never>?
 }
 
@@ -116,7 +117,7 @@ struct MainAssistantView: View {
                     Image(systemName: "slider.horizontal.3")
                         .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MainTapButtonStyle())
                 .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 26)
@@ -321,7 +322,7 @@ struct MainAssistantView: View {
                 Button(action: showSettings) {
                     Image(systemName: "ellipsis.circle")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MainTapButtonStyle())
                 .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 18)
@@ -361,7 +362,7 @@ struct MainAssistantView: View {
                     in: RoundedRectangle(cornerRadius: 10)
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MainTapButtonStyle(pressedScale: 0.95))
     }
 
     private var conversationContent: some View {
@@ -422,9 +423,9 @@ struct MainAssistantView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Mac 状态总览")
+                    Text(managerScreenTitle)
                         .font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text("真实状态与可执行工具分开显示；所有清理和移动都会先预览。")
+                    Text(managerScreenSubtitle)
                         .font(.system(size: 10, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
@@ -436,24 +437,13 @@ struct MainAssistantView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
-                if let active = viewState.activeTool {
-                    activeMaintenanceCard(active)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                } else if let completed = viewState.completedTool {
-                    completedMaintenanceCard(completed, failed: false)
-                        .transition(.scale(scale: 0.96).combined(with: .opacity))
-                } else if let failed = viewState.failedTool {
-                    completedMaintenanceCard(failed, failed: true)
-                        .transition(.scale(scale: 0.96).combined(with: .opacity))
-                }
-
                 VStack(alignment: .leading, spacing: 12) {
                     managerSectionTitle("核心维护", detail: "先扫描，再决定")
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                         primaryManagerButton(
                             "系统体检",
                             detail: "磁盘、内存与负载",
-                            status: "只读检查",
+                            status: "开始体检",
                             icon: "stethoscope",
                             tint: .cyan,
                             prompt: "对这台 Mac 做一次只读系统体检：检查磁盘空间、内存压力、高负载进程、启动项和明显异常。不要修改任何设置，不要结束进程；给出按优先级排列的结果和可验证建议。"
@@ -461,7 +451,7 @@ struct MainAssistantView: View {
                         primaryManagerButton(
                             "垃圾清理",
                             detail: "缓存、日志与临时文件",
-                            status: "扫描空间",
+                            status: "扫描垃圾",
                             icon: "sparkles.rectangle.stack",
                             tint: .mint,
                             prompt: "扫描这台 Mac 上安全可清理的缓存、日志、临时文件和废纸篓，统计路径、大小和风险。现在只扫描并生成预览，禁止删除任何文件；等我明确确认具体项目后再清理。"
@@ -506,6 +496,25 @@ struct MainAssistantView: View {
     }
 
     private var systemDashboard: some View {
+        dashboardSurface {
+            if state.showPermission {
+                approvalDashboardContent
+            } else if let active = viewState.activeTool {
+                activeDashboardContent(active)
+            } else if let completed = viewState.completedTool {
+                resultDashboardContent(completed, failed: false)
+            } else if let failed = viewState.failedTool {
+                resultDashboardContent(failed, failed: true)
+            } else {
+                liveDashboardContent
+            }
+        }
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewState.activeTool)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewState.completedTool)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: state.showPermission)
+    }
+
+    private var liveDashboardContent: some View {
         HStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
@@ -544,7 +553,113 @@ struct MainAssistantView: View {
                 dashboardMetric("通道", value: "Hermes 就绪 · \(state.remoteChannelStatus)", icon: "point.3.connected.trianglepath.dotted", tint: .yellow)
             }
         }
-        .padding(16)
+    }
+
+    private func activeDashboardContent(_ title: String) -> some View {
+        HStack(spacing: 18) {
+            ManagerActivityAnimation(color: themeAccent)
+                .frame(width: 72, height: 72)
+                .transition(.scale.combined(with: .opacity))
+            VStack(alignment: .leading, spacing: 7) {
+                Label("本机处理中", systemImage: "bolt.horizontal.circle.fill")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(themeAccent)
+                Text(title)
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                Text(viewState.toolSummary.isEmpty ? activityDetail : viewState.toolSummary)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(themeAccent)
+            }
+            Spacer(minLength: 12)
+            Button {
+                viewState.maintenanceTask?.cancel()
+            } label: {
+                Label("停止", systemImage: "stop.fill")
+            }
+            .buttonStyle(MainGlassActionButtonStyle(tint: .red, prominent: false, height: 34, cornerRadius: 11))
+        }
+    }
+
+    private var approvalDashboardContent: some View {
+        HStack(spacing: 18) {
+            ZStack {
+                Circle().fill(Color.orange.opacity(0.12))
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .symbolEffect(.pulse, options: .repeating)
+            }
+            .frame(width: 72, height: 72)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("等待你的确认")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(.orange)
+                Text(state.approvalTitle)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                Text(state.approvalDetail)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 12)
+            VStack(spacing: 8) {
+                Button("允许执行") { state.approveFromUserInteraction() }
+                    .buttonStyle(MainGlassActionButtonStyle(tint: .orange, prominent: true, height: 34, cornerRadius: 11))
+                Button("取消") { state.cancel() }
+                    .buttonStyle(MainGlassActionButtonStyle(tint: .gray, prominent: false, height: 30, cornerRadius: 10))
+            }
+        }
+    }
+
+    private func resultDashboardContent(_ title: String, failed: Bool) -> some View {
+        HStack(spacing: 16) {
+            ZStack {
+                Circle().fill((failed ? Color.red : Color.green).opacity(0.12))
+                Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                    .font(.system(size: 31, weight: .medium))
+                    .foregroundStyle(failed ? .red : .green)
+                    .symbolEffect(.bounce, value: title)
+            }
+            .frame(width: 72, height: 72)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(failed ? "需要处理" : "检测完成")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(failed ? .red : .green)
+                Text(title)
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                Text(viewState.toolSummary.isEmpty ? (failed ? "本次检测没有完成，请稍后重试。" : "本机检测完成，没有自动修改任何内容。") : viewState.toolSummary)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if let details = viewState.lastReport?.details.prefix(2), !details.isEmpty {
+                    Text(details.joined(separator: "  ·  "))
+                        .font(.system(size: 8.5, design: .rounded))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 10)
+            VStack(spacing: 8) {
+                if !failed,
+                   title == MacCareTool.junkScan.rawValue,
+                   let plan = viewState.lastReport?.cleanupPlan {
+                    Button("确认移到废纸篓") { confirmSafeCleanup(plan) }
+                        .buttonStyle(MainGlassActionButtonStyle(tint: .mint, prominent: true, height: 34, cornerRadius: 11))
+                }
+                Button("返回总览") { resetManagerScreen() }
+                    .buttonStyle(MainGlassActionButtonStyle(tint: themeAccent, prominent: false, height: 30, cornerRadius: 10))
+            }
+        }
+    }
+
+    private func dashboardSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+        .frame(maxWidth: .infinity, minHeight: 176, alignment: .leading)
+        .padding(18)
         .background(
             LinearGradient(
                 colors: [.black.opacity(0.34), themeAccent.opacity(0.035), .black.opacity(0.26)],
@@ -561,6 +676,30 @@ struct MainAssistantView: View {
                 )
         )
         .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
+    }
+
+    private var managerScreenTitle: String {
+        if state.showPermission { return "等待操作授权" }
+        if let active = viewState.activeTool { return "正在执行 · \(active)" }
+        if let completed = viewState.completedTool { return "检测结果 · \(completed)" }
+        if let failed = viewState.failedTool { return "需要处理 · \(failed)" }
+        return "Mac 状态总览"
+    }
+
+    private var managerScreenSubtitle: String {
+        if state.showPermission { return "请在状态屏中确认或取消，不必切换到聊天界面。" }
+        if viewState.activeTool != nil { return "状态屏会持续显示当前进度；可以随时停止。" }
+        if viewState.completedTool != nil || viewState.failedTool != nil { return "结果与后续操作都留在这里，确认后再修改。" }
+        return "真实状态与可执行工具分开显示；所有清理和移动都会先预览。"
+    }
+
+    private func resetManagerScreen() {
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.8)) {
+            viewState.completedTool = nil
+            viewState.failedTool = nil
+            viewState.toolSummary = ""
+            viewState.lastReport = nil
+        }
     }
 
     private func dashboardMetric(_ title: String, value: String, icon: String, tint: Color) -> some View {
@@ -655,11 +794,38 @@ struct MainAssistantView: View {
                 Spacer(minLength: 0)
                 managerStatus(title: title, idle: status, tint: tint)
             }
-            .frame(maxWidth: .infinity, minHeight: 116, alignment: .topLeading)
-            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+            .padding(11)
+            .background(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(viewState.hoveredManagerTool == title ? 0.115 : 0.075),
+                        tint.opacity(viewState.hoveredManagerTool == title ? 0.16 : 0.085),
+                        .black.opacity(0.08)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
             .fuyuLiquidGlass(tint: tint.opacity(0.1), interactive: true, in: RoundedRectangle(cornerRadius: 17))
+            .overlay {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .strokeBorder(
+                        viewState.hoveredManagerTool == title ? tint.opacity(0.58) : .white.opacity(0.13),
+                        lineWidth: viewState.hoveredManagerTool == title ? 1.15 : 0.75
+                    )
+            }
+            .shadow(color: viewState.hoveredManagerTool == title ? tint.opacity(0.22) : .black.opacity(0.16), radius: viewState.hoveredManagerTool == title ? 18 : 9, y: 7)
+            .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ManagerCardButtonStyle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.16)) {
+                viewState.hoveredManagerTool = hovering ? title : (viewState.hoveredManagerTool == title ? nil : viewState.hoveredManagerTool)
+            }
+        }
+        .help(viewState.activeTool == title ? "点击停止当前检测" : "点击整张卡片开始\(title)")
     }
 
     private func compactManagerButton(_ title: String, icon: String, tint: Color, prompt: String) -> some View {
@@ -685,11 +851,38 @@ struct MainAssistantView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
-            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+            .padding(10)
+            .background(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(viewState.hoveredManagerTool == title ? 0.105 : 0.06),
+                        tint.opacity(viewState.hoveredManagerTool == title ? 0.14 : 0.065),
+                        .black.opacity(0.06)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+            )
             .fuyuLiquidGlass(tint: tint.opacity(0.075), interactive: true, in: RoundedRectangle(cornerRadius: 15))
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(
+                        viewState.hoveredManagerTool == title ? tint.opacity(0.52) : .white.opacity(0.11),
+                        lineWidth: viewState.hoveredManagerTool == title ? 1.05 : 0.7
+                    )
+            }
+            .shadow(color: viewState.hoveredManagerTool == title ? tint.opacity(0.18) : .black.opacity(0.12), radius: viewState.hoveredManagerTool == title ? 15 : 7, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ManagerCardButtonStyle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.16)) {
+                viewState.hoveredManagerTool = hovering ? title : (viewState.hoveredManagerTool == title ? nil : viewState.hoveredManagerTool)
+            }
+        }
+        .help(viewState.activeTool == title ? "点击停止当前检测" : "点击整张卡片开始\(title)")
     }
 
     private func toolSubtitle(_ title: String) -> String {
@@ -715,7 +908,16 @@ struct MainAssistantView: View {
     }
 
     private func beginManagerTool(_ title: String, prompt: String) {
-        guard viewState.activeTool == nil else { return }
+        if viewState.activeTool == title {
+            viewState.maintenanceTask?.cancel()
+            state.recordActionStatus("电脑管家正在停止：\(title)")
+            return
+        }
+        if let active = viewState.activeTool {
+            viewState.toolSummary = "“\(active)”正在检测。可点击正在运行的卡片停止，再启动“\(title)”。"
+            state.recordActionStatus("电脑管家 · \(active)仍在运行，请先停止后再启动\(title)")
+            return
+        }
         guard let tool = MacCareTool(rawValue: title) else {
             sendText(prompt)
             return
@@ -724,7 +926,7 @@ struct MainAssistantView: View {
             viewState.activeTool = title
             viewState.completedTool = nil
             viewState.failedTool = nil
-            viewState.toolSummary = ""
+            viewState.toolSummary = "正在直接读取本机数据；点击正在运行的卡片可以随时停止。"
             viewState.lastReport = nil
         }
         state.activitySource = "电脑管家 · \(title)"
@@ -765,12 +967,16 @@ struct MainAssistantView: View {
         if viewState.activeTool == title {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini).tint(tint)
-                Text(state.phase == .executing ? "执行中" : "分析中")
+                Text("点击停止")
             }
             .font(.system(size: 8.5, weight: .semibold, design: .rounded))
             .foregroundStyle(tint)
             .padding(.horizontal, 7).padding(.vertical, 4)
             .background(tint.opacity(0.12), in: Capsule())
+        } else if viewState.activeTool != nil {
+            Label("请稍候", systemImage: "lock.fill")
+                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
         } else if viewState.completedTool == title {
             Label("已完成", systemImage: "checkmark")
                 .font(.system(size: 8.5, weight: .semibold, design: .rounded))
@@ -791,13 +997,19 @@ struct MainAssistantView: View {
     @ViewBuilder
     private func compactStatus(_ title: String) -> some View {
         if viewState.activeTool == title {
-            ProgressView().controlSize(.mini)
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("停止")
+            }
+            .font(.system(size: 8, weight: .semibold, design: .rounded))
+        } else if viewState.activeTool != nil {
+            Image(systemName: "lock.fill").foregroundStyle(.tertiary)
         } else if viewState.completedTool == title {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         } else if viewState.failedTool == title {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
         } else {
-            Text("未扫描")
+            Label("开始扫描", systemImage: "arrow.right")
                 .font(.system(size: 8, design: .rounded))
                 .foregroundStyle(.tertiary)
         }
@@ -810,7 +1022,7 @@ struct MainAssistantView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("正在进行：\(title)")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
-                Text(activityDetail)
+                Text(viewState.toolSummary.isEmpty ? activityDetail : viewState.toolSummary)
                     .font(.system(size: 9.5, design: .rounded))
                     .foregroundStyle(.secondary)
             }
@@ -857,14 +1069,6 @@ struct MainAssistantView: View {
     }
 
     private func confirmSafeCleanup(_ plan: LevelScanResult) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "确认清理这些安全缓存？"
-        alert.informativeText = "将把约 \(ByteCountFormatter.string(fromByteCount: plan.totalBytes, countStyle: .file)) 的白名单缓存和日志移到废纸篓，不会触碰文稿、桌面、照片、邮件、iCloud 或钥匙串。你可以从废纸篓恢复。"
-        alert.addButton(withTitle: "移到废纸篓")
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
         withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
             viewState.activeTool = MacCareTool.junkScan.rawValue
             viewState.completedTool = nil
@@ -933,6 +1137,34 @@ private struct MainGlassActionButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(isEnabled ? 1 : 0.46)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+    }
+}
+
+private struct MainTapButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.9
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .brightness(configuration.isPressed ? 0.12 : 0)
+            .shadow(color: .white.opacity(configuration.isPressed ? 0.16 : 0), radius: 8)
+            .animation(.spring(response: 0.18, dampingFraction: 0.64), value: configuration.isPressed)
+    }
+}
+
+/// Gives every maintenance card an immediate, physical-feeling response before
+/// the scan itself has time to start updating its progress state.
+private struct ManagerCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.972 : 1)
+            .brightness(configuration.isPressed ? 0.075 : 0)
+            .overlay {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(.white.opacity(configuration.isPressed ? 0.085 : 0))
+                    .padding(configuration.isPressed ? 1 : 5)
+            }
+            .animation(.spring(response: 0.2, dampingFraction: 0.68), value: configuration.isPressed)
     }
 }
 
