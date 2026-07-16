@@ -10,6 +10,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case models = "模型"
     case memory = "记忆"
     case persona = "人格"
+    case remote = "远程"
     case advanced = "高级"
     var id: String { rawValue }
     var icon: String {
@@ -20,6 +21,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .models: "cpu"
         case .memory: "brain.head.profile"
         case .persona: "person.crop.circle.badge.sparkles"
+        case .remote: "antenna.radiowaves.left.and.right"
         case .advanced: "gearshape.2"
         }
     }
@@ -173,6 +175,7 @@ struct SettingsView: View {
         case .models: "随时切换云端模型、本地模型或兼容服务"
         case .memory: "控制对话上下文和跨启动记忆的保存范围"
         case .persona: "定义浮屿是谁，以及它用什么方式陪你说话"
+        case .remote: "通过飞书在外面直接与浮屿对话，并安全触发 Mac 任务"
         case .advanced: "调整自动提交、静默收起和语音交互节奏"
         }
     }
@@ -186,6 +189,7 @@ struct SettingsView: View {
         case .models: modelsPage
         case .memory: memoryPage
         case .persona: personaPage
+        case .remote: remotePage
         case .advanced: advancedPage
         }
     }
@@ -860,6 +864,80 @@ struct SettingsView: View {
                 settingLabel("错误自动隐藏", detail: "普通错误提示 4 秒后收起，不再卡住回复条")
                 Divider()
                 settingLabel("本地模型", detail: "Ollama / LM Studio 默认连接 127.0.0.1，不需要上传密钥")
+            }
+        }
+    }
+
+    private var remotePage: some View {
+        VStack(spacing: 14) {
+            settingsCard {
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.blue.opacity(0.13))
+                        Image(systemName: "message.badge.waveform.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+                    .frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("飞书远程助手")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        Text("使用企业自建应用的 WebSocket 长连接，无需公网服务器。")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $preferences.feishuEnabled)
+                        .labelsHidden()
+                        .disabled(preferences.feishuAppID.isEmpty || !preferences.hasStoredFeishuSecret)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("App ID")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    TextField("cli_xxxxxxxxxxxxxxxx", text: $preferences.feishuAppID)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("App Secret")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    HStack(spacing: 9) {
+                        SecureField(
+                            preferences.hasStoredFeishuSecret ? "已安全保存；输入新值可替换" : "输入 App Secret",
+                            text: $preferences.feishuSecretDraft
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        Button("保存连接") {
+                            do {
+                                try preferences.saveFeishuCredentials()
+                                viewState.chatStatus = "飞书凭证已保存；现在可以启用远程助手"
+                            } catch {
+                                viewState.chatStatus = "保存失败：\(error.localizedDescription)"
+                            }
+                        }
+                        .disabled(preferences.feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+                if !viewState.chatStatus.isEmpty {
+                    Text(viewState.chatStatus)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            settingsCard {
+                Label("飞书应用需要开启机器人能力，并订阅“接收消息 v2.0”。", systemImage: "checkmark.shield.fill")
+                    .font(.system(size: 11, design: .rounded))
+                Divider()
+                settingLabel("远程操作仍需确认", detail: "聊天回复可以直接返回；清理、移动文件和系统修改会停在 Mac 上等待确认。")
+                Divider()
+                settingLabel("建议使用独立飞书应用", detail: "不要与 Hermes 共用同一个 App ID，避免两条 WebSocket 连接随机分流消息。")
             }
         }
     }

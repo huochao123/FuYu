@@ -104,26 +104,44 @@ private struct AssistantOrb: View {
     let quitApp: () -> Void
 
     var body: some View {
-        Button {
-            state.requestVoice()
-        } label: {
-            orbVisual
-        }
-        .buttonStyle(.plain)
+        orbVisual
         .contentShape(Rectangle())
+        .gesture(
+            TapGesture(count: 2)
+                .exclusively(before: TapGesture(count: 1))
+                .onEnded { gesture in
+                    switch gesture {
+                    case .first:
+                        if state.phase == .listening { state.cancel() }
+                    case .second:
+                        state.requestVoice()
+                    }
+                }
+        )
         .simultaneousGesture(
             DragGesture(minimumDistance: 4, coordinateSpace: .global)
                 .onChanged { dragChanged($0.translation) }
                 .onEnded { _ in dragEnded() }
         )
+        .opacity(preferences.voiceInputEnabled ? 1 : 0.58)
+        .overlay(alignment: .topTrailing) {
+            if !preferences.voiceInputEnabled {
+                Image(systemName: "mic.slash.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(5)
+                    .background(.red, in: Circle())
+                    .offset(x: 2, y: -2)
+            }
+        }
         .accessibilityLabel("浮屿语音助手")
-        .accessibilityHint("点击开始说话，拖动可以改变位置")
-        .help("点击开始说话 · 也可使用菜单中显示的全局快捷键")
+        .accessibilityHint("单击开始说话，识别时双击立即停止，拖动可以改变位置")
+        .help("单击开始说话 · 识别中双击立即停止且不发送")
         .contextMenu {
             Button {
-                state.requestVoice()
+                if state.phase == .listening { state.cancel() } else { state.requestVoice() }
             } label: {
-                Label("开始语音", systemImage: "mic.fill")
+                Label(state.phase == .listening ? "停止识别" : "开始语音", systemImage: state.phase == .listening ? "stop.fill" : "mic.fill")
             }
             Button {
                 showSettings()
@@ -360,10 +378,20 @@ private struct ConversationBubble: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            Button(action: primaryAction) {
-                PhaseParticleGlyph(state: state, preferences: preferences)
-            }
-            .buttonStyle(.plain)
+            PhaseParticleGlyph(state: state, preferences: preferences)
+            .contentShape(Rectangle())
+            .gesture(
+                TapGesture(count: 2)
+                    .exclusively(before: TapGesture(count: 1))
+                    .onEnded { gesture in
+                        switch gesture {
+                        case .first:
+                            if state.phase == .listening { state.cancel() }
+                        case .second:
+                            primaryAction()
+                        }
+                    }
+            )
             .accessibilityLabel(actionLabel)
             .contextMenu {
                 Button("个性化设置…", action: showSettings)

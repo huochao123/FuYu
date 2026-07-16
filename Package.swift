@@ -8,9 +8,15 @@ let package = Package(
     products: [
         .executable(name: "MiMoMac", targets: ["MiMoMac"])
     ],
+    dependencies: [
+        .package(path: "Vendor/DustyCleanerEngine")
+    ],
     targets: [
         .executableTarget(
             name: "MiMoMac",
+            dependencies: [
+                .product(name: "CleanerEngine", package: "DustyCleanerEngine")
+            ],
             path: "Sources/MiMoMac"
         )
     ]

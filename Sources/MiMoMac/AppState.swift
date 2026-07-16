@@ -54,6 +54,9 @@ final class AppState: ObservableObject {
 
     @Published var isExpanded = false
     @Published var phase: Phase = .idle
+    @Published var audioLevel = 0.0
+    @Published var activitySource = "本机"
+    @Published var remoteChannelStatus = "飞书未配置"
     @Published var transcript = "需要我做什么？"
     @Published var modelLabel = "MiMo"
     @Published var taskTitle = "准备任务"
@@ -130,6 +133,7 @@ final class AppState: ObservableObject {
         if !preservingApproval { showPermission = false }
         isExpanded = true
         phase = .listening
+        activitySource = "麦克风"
         transcript = preservingApproval ? "请说“允许执行”或“取消执行”" : "我在听…"
         approvalIsListening = preservingApproval
         if preservingApproval { approvalHeardText = "" }
@@ -151,6 +155,7 @@ final class AppState: ObservableObject {
         showPermission = false
         isExpanded = true
         phase = .thinking
+        audioLevel = 0
         transcript = userText
         progress = 0
         steps = []
@@ -177,6 +182,7 @@ final class AppState: ObservableObject {
         approvalIsListening = false
         isExpanded = true
         phase = .executing
+        audioLevel = 0
         taskTitle = title
         progress = 0.08
         steps = [
@@ -201,6 +207,7 @@ final class AppState: ObservableObject {
         showPermission = false
         isExpanded = true
         phase = .speaking
+        audioLevel = 0
         transcript = text
         progress = steps.isEmpty ? 0 : 1
         for index in steps.indices { steps[index].status = .complete }
@@ -210,6 +217,8 @@ final class AppState: ObservableObject {
     func finishSpeaking() {
         guard phase == .speaking else { return }
         phase = .idle
+        audioLevel = 0
+        activitySource = "本机"
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(700))
             guard let self, self.phase == .idle, !self.showPermission else { return }
@@ -222,6 +231,7 @@ final class AppState: ObservableObject {
         showPermission = false
         isExpanded = true
         phase = .answered
+        audioLevel = 0
         transcript = text
         progress = steps.isEmpty ? 0 : 1
         for index in steps.indices { steps[index].status = .complete }
@@ -239,6 +249,7 @@ final class AppState: ObservableObject {
         showPermission = false
         isExpanded = true
         phase = .error
+        audioLevel = 0
         transcript = message
         progress = 0
         appendConversation(.error, message)
@@ -283,6 +294,8 @@ final class AppState: ObservableObject {
         approvalHeardText = ""
         approvalID = nil
         phase = .idle
+        audioLevel = 0
+        activitySource = "本机"
         progress = 0
         transcript = message
         steps = []

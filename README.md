@@ -82,6 +82,11 @@ All images below are captured from the current build. They are not concept rende
 
 ### 主要功能
 
+- **完整主界面**：声音联动光场、对话记录、模型状态与电脑管家位于同一窗口，并使用 macOS Liquid Glass 与兼容回退材质。
+- **三套视觉皮肤**：深海蓝青、暖金石墨与冰川银蓝可在主界面即时切换；功能按钮保持磨砂玻璃层，内容区使用更安静的实色材质。
+- **浮屿电脑管家**：九项基础工具均由本机直接扫描，不消耗模型额度，也不经过 Hermes；安全缓存使用白名单引擎执行“先扫描、再预览、后确认”，确认后移到废纸篓并保留操作记录。
+- **过程动画反馈**：每个维护工具都有独立的分析、执行、完成和失败动画，不以瞬时按钮代替真实状态。
+- **飞书远程入口**：可使用独立的飞书企业自建应用，通过 WebSocket 长连接在外面与浮屿对话；Mac 修改仍保留本机确认。
 - **原生悬浮交互**：默认位于刘海下方；空闲隐藏，唤醒后出现，不遮挡正常工作。
 - **六款真实皮肤**：粒子声场、无框点波、经典圆球、极光流体、星轨共振和晶格脉冲。
 - **状态动画**：聆听、思考、播报、完成与错误状态具有不同粒子动效。
@@ -117,7 +122,14 @@ All images below are captured from the current build. They are not concept rende
 - 使用 Mac 操作能力时需要相应辅助功能权限及 Hermes 环境
 - 云端模型与云端语音功能需要用户自己的 API 密钥
 
-> Hermes 是可选依赖。没有安装 Hermes 时，聊天、语音识别、语音回复、模型切换和记忆功能仍可正常使用；只有“控制 Mac”需要 Hermes。当前版本未实现其他操作执行后端。
+> Hermes 是可选依赖。没有安装 Hermes 时，聊天、语音、记忆与电脑管家的本机扫描和安全清理仍可正常使用；只有复杂、跨应用的 Mac 控制任务需要 Hermes。
+
+### 电脑管家实现与开源参考
+
+- 安全缓存扫描、白名单路径校验、移到废纸篓和本机清理日志基于 [Dusty CleanerEngine](https://github.com/yagcioglutoprak/dusty)（MIT）集成，完整许可见 `THIRD_PARTY_NOTICES.md`。
+- 实时状态屏与后台采样的功能基准参考 [Stats](https://github.com/exelban/stats)；浮屿使用自己的轻量进程采样与连续高负载判断，没有复制其界面。
+- [Mole](https://github.com/tw93/mole) 仅作为功能和安全边界参考；当前仓库为 GPLv3，浮屿没有合并其代码。
+- Pearcleaner 带有 Commons Clause 商业限制，浮屿没有合并其代码。
 
 ### 安装
 
@@ -187,6 +199,10 @@ While the task is running, say “wait—change the end time to 5 PM.” FuYu te
 
 ### Highlights
 
+- **Full main window** — a sound-reactive voice field, shared conversation, model status, and locally powered Mac maintenance console in one Liquid Glass-aware interface.
+- **FuYu Mac Care** — system inspection, junk scanning, smart organization, large and duplicate files, login items, hot processes, and app leftovers all follow preview-before-change safety.
+- **Process-aware motion** — every maintenance tool has distinct analyzing, executing, completed, and failed feedback.
+- **Feishu remote channel** — connect a dedicated Feishu custom app over WebSocket to chat with FuYu remotely while Mac changes still require local approval.
 - **Native floating experience** — sits below the notch by default and disappears when idle.
 - **Six live skins** — Particle Field, Bare Dot Wave, Classic Orb, Aurora Flow, Orbit Resonance, and Crystal Pulse.
 - **State-aware motion** — distinct particle animations for listening, thinking, speaking, completion, and errors.
@@ -222,7 +238,13 @@ FuYu is evolving from one-shot voice commands toward a verifiable agent loop. Se
 - Accessibility permission and a working Hermes environment for Mac actions
 - Your own API key for cloud models or cloud speech services
 
-> Hermes is optional. Chat, speech recognition, voice output, model switching, and memory work without it. Hermes is required only for Mac actions. No alternative action backend is implemented in the current release.
+> Hermes is optional. Chat, speech, memory, local Mac Care scans, and allowlisted safe cleanup work without it. Hermes is reserved for complex cross-app Mac actions.
+
+### Mac Care implementation and open-source references
+
+- Allowlisted scanning, path validation, Trash-based cleanup, and local operation logs integrate [Dusty CleanerEngine](https://github.com/yagcioglutoprak/dusty) under MIT; see `THIRD_PARTY_NOTICES.md`.
+- The live dashboard is functionally inspired by [Stats](https://github.com/exelban/stats), while FuYu uses its own lightweight process sampler and sustained-load classifier.
+- [Mole](https://github.com/tw93/mole) is used only as a product and safety reference; no GPLv3 code is included.
 
 ### Install
 

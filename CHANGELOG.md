@@ -1,5 +1,35 @@
 # 更新日志 / Changelog
 
+## v0.5.0 — 2026-07-16
+
+- 新增完整主界面：声音能量联动光场、共享对话与电脑管家控制台。
+- 新增系统体检、垃圾扫描、智能整理、大文件、重复文件、启动项、发热进程、应用残留与优化建议入口。
+- 所有维护工具新增分析、执行、完成和失败动画，并坚持先扫描预览、再由用户确认修改。
+- 在支持的系统上采用原生 Liquid Glass；旧版 macOS 自动回退到磨砂材质。
+- 新增飞书远程设置与 WebSocket 桥接，凭证保存于钥匙串，远程 Mac 操作继续等待本机批准。
+- 主对话窗口新增语音识别总开关与“停止识别”，误触停止不会提交内容；悬浮入口识别中双击也可立即停止。
+- 麦克风启用系统回声消除并采用最低媒体压低等级，识别结束后立即释放语音处理，避免 Fn 触发后持续影响播放音量。
+- 主界面升级为分层蓝紫内容底与独立功能面板，主要控件采用磨砂 Liquid Glass 胶囊按钮，电脑管家按核心维护与专项工具重新分区。
+- 电脑管家九项扫描改为本机直接执行，不再经过模型或 Hermes；安全清理采用 Dusty 的 MIT 许可白名单引擎，预览确认后移到废纸篓并保留本机操作记录。
+- 新增后台发热进程监测：每 12 秒低开销采样，连续三次高 CPU 才提示，区分短时波动与持续高负载；只提醒，不擅自结束进程。
+- 重绘蓝青浮岛声波应用图标；主界面新增深海蓝青、暖金石墨、冰川银蓝三套即时切换皮肤，减少通用紫色 AI 视觉。
+- 电脑管家改为六张状态卡、三张核心维护大卡和 3×2 专项工具宫格，扩大窗口与卡片留白，解决按钮拥挤和列表感过重。
+- 状态总览进一步合并为一块实时仪表屏，显示健康度、CPU、内存、进程数、最高负载进程、磁盘、开机时间、发热风险以及语音和远程通道状态；与下方可点击功能卡明确区分。
+
+- Added a full main window with a sound-reactive field, shared conversation, and a dedicated Mac Care console.
+- Added system inspection, junk scanning, smart organization, large/duplicate file discovery, login-item review, hot-process analysis, app-leftover scanning, and optimization guidance.
+- Added analyzing, executing, completed, and failed animation states with preview-before-change safety.
+- Uses native Liquid Glass when available with a frosted-material fallback on older macOS releases.
+- Added Feishu remote settings and a WebSocket bridge; credentials live in Keychain and remote Mac actions still require local approval.
+- Added a voice-recognition master switch and cancel-without-submit action in the main conversation window; double-clicking the floating entry also cancels active recognition.
+- Enabled acoustic echo cancellation with minimum media ducking and immediate voice-processing teardown after recognition.
+- Refined the main window with layered indigo content surfaces, frosted Liquid Glass action capsules, and clearer Mac Care sections.
+- All nine Mac Care scans now run locally without a model or Hermes; safe cleanup uses Dusty's MIT-licensed allowlist engine, confirms a preview, moves items to Trash, and writes a local action log.
+- Added low-overhead hot-process monitoring every 12 seconds; alerts require three consecutive high-CPU samples, separating brief spikes from sustained load without terminating processes automatically.
+- Replaced the generic purple icon with a teal floating-island waveform mark and added Deep Ocean, Warm Graphite, and Glacier themes.
+- Rebuilt Mac Care around six status cards, three primary maintenance tiles, and a 3×2 specialist-tool grid with more spacing.
+- Consolidated status into one live dashboard screen with health score, CPU, memory, process count, busiest process, disk, uptime, heat risk, voice, and remote-channel state.
+
 ## v0.4.0 — 2026-07-15
 
 ### 可打断的自然语音交互 / Conversational voice interruption

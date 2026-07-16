@@ -51,6 +51,19 @@ enum FloatingPlacement: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum MainWindowTheme: String, CaseIterable, Identifiable, Sendable {
+    case deepOcean, warmGraphite, glacier
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .deepOcean: "深海蓝青"
+        case .warmGraphite: "暖金石墨"
+        case .glacier: "冰川银蓝"
+        }
+    }
+}
+
 enum PersonaRelationship: String, CaseIterable, Identifiable, Sendable {
     case friend, partner, family, colleague, mentor, custom
     var id: String { rawValue }
@@ -279,6 +292,8 @@ final class AssistantPreferences: ObservableObject {
         static let endPauseSeconds = "assistantEndPauseSeconds"
         static let continuousConversation = "assistantContinuousConversation"
         static let voiceInterruption = "assistantVoiceInterruption"
+        static let voiceInputEnabled = "assistantVoiceInputEnabled"
+        static let mainWindowTheme = "assistantMainWindowTheme"
         static let floatingSkin = "assistantFloatingSkin"
         static let showDockIcon = "assistantShowDockIcon"
         static let pushToTalkShortcut = "assistantPushToTalkShortcut"
@@ -291,6 +306,8 @@ final class AssistantPreferences: ObservableObject {
         static let personaBackground = "assistantPersonaBackground"
         static let personaTraits = "assistantPersonaTraits"
         static let personaStyle = "assistantPersonaStyle"
+        static let feishuEnabled = "assistantFeishuEnabled"
+        static let feishuAppID = "assistantFeishuAppID"
     }
 
     @Published var voicePolicy: VoiceReplyPolicy { didSet { defaults.set(voicePolicy.rawValue, forKey: Key.voicePolicy) } }
@@ -326,6 +343,8 @@ final class AssistantPreferences: ObservableObject {
     @Published var endPauseSeconds: Double { didSet { defaults.set(endPauseSeconds, forKey: Key.endPauseSeconds) } }
     @Published var continuousConversation: Bool { didSet { defaults.set(continuousConversation, forKey: Key.continuousConversation) } }
     @Published var voiceInterruption: Bool { didSet { defaults.set(voiceInterruption, forKey: Key.voiceInterruption) } }
+    @Published var voiceInputEnabled: Bool { didSet { defaults.set(voiceInputEnabled, forKey: Key.voiceInputEnabled) } }
+    @Published var mainWindowTheme: MainWindowTheme { didSet { defaults.set(mainWindowTheme.rawValue, forKey: Key.mainWindowTheme) } }
     @Published var floatingSkin: FloatingSkin { didSet { defaults.set(floatingSkin.rawValue, forKey: Key.floatingSkin) } }
     @Published var showDockIcon: Bool { didSet { defaults.set(showDockIcon, forKey: Key.showDockIcon) } }
     @Published var pushToTalkShortcut: PushToTalkShortcut { didSet { defaults.set(pushToTalkShortcut.rawValue, forKey: Key.pushToTalkShortcut) } }
@@ -338,6 +357,9 @@ final class AssistantPreferences: ObservableObject {
     @Published var personaBackground: String { didSet { defaults.set(String(personaBackground.prefix(4000)), forKey: Key.personaBackground) } }
     @Published var personaTraits: String { didSet { defaults.set(String(personaTraits.prefix(1200)), forKey: Key.personaTraits) } }
     @Published var personaStyle: String { didSet { defaults.set(String(personaStyle.prefix(2400)), forKey: Key.personaStyle) } }
+    @Published var feishuEnabled: Bool { didSet { defaults.set(feishuEnabled, forKey: Key.feishuEnabled) } }
+    @Published var feishuAppID: String { didSet { defaults.set(feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.feishuAppID) } }
+    @Published var feishuSecretDraft = ""
     @Published var ttsAPIKeyDraft = ""
 
     private let defaults: UserDefaults
@@ -374,6 +396,8 @@ final class AssistantPreferences: ObservableObject {
         endPauseSeconds = min(max(defaults.object(forKey: Key.endPauseSeconds) as? Double ?? 2.3, 1.2), 5)
         continuousConversation = defaults.object(forKey: Key.continuousConversation) as? Bool ?? false
         voiceInterruption = defaults.object(forKey: Key.voiceInterruption) as? Bool ?? true
+        voiceInputEnabled = defaults.object(forKey: Key.voiceInputEnabled) as? Bool ?? true
+        mainWindowTheme = MainWindowTheme(rawValue: defaults.string(forKey: Key.mainWindowTheme) ?? "deepOcean") ?? .deepOcean
         floatingSkin = FloatingSkin(rawValue: defaults.string(forKey: Key.floatingSkin) ?? "particleFrame") ?? .particleFrame
         showDockIcon = defaults.object(forKey: Key.showDockIcon) as? Bool ?? false
         pushToTalkShortcut = PushToTalkShortcut(rawValue: defaults.string(forKey: Key.pushToTalkShortcut) ?? "fnHold") ?? .fnHold
@@ -386,6 +410,8 @@ final class AssistantPreferences: ObservableObject {
         personaBackground = defaults.string(forKey: Key.personaBackground) ?? ""
         personaTraits = defaults.string(forKey: Key.personaTraits) ?? "温柔、真诚、有幽默感，尊重边界"
         personaStyle = defaults.string(forKey: Key.personaStyle) ?? "自然口语化，不说教，像真实的人一样回应"
+        feishuEnabled = defaults.object(forKey: Key.feishuEnabled) as? Bool ?? false
+        feishuAppID = defaults.string(forKey: Key.feishuAppID) ?? ""
         ready = true
         loadProviderFields()
     }
@@ -507,9 +533,18 @@ final class AssistantPreferences: ObservableObject {
     }
 
     static let ttsKeychainService = "fuyu-tts-key-openai"
+    static let feishuKeychainService = "fuyu-feishu-app-secret"
 
     var hasStoredTTSAPIKey: Bool {
         ttsAPIKey?.isEmpty == false
+    }
+
+    var hasStoredFeishuSecret: Bool {
+        KeychainStore.password(service: Self.feishuKeychainService)?.isEmpty == false
+    }
+
+    var feishuAppSecret: String? {
+        KeychainStore.password(service: Self.feishuKeychainService)
     }
 
     var ttsAPIKey: String? {
@@ -531,6 +566,15 @@ final class AssistantPreferences: ObservableObject {
         if !value.isEmpty {
             try KeychainStore.set(value, service: Self.ttsKeychainService)
         }
+    }
+
+    func saveFeishuCredentials() throws {
+        feishuAppID = feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = feishuSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !secret.isEmpty {
+            try KeychainStore.set(secret, service: Self.feishuKeychainService)
+        }
+        feishuSecretDraft = ""
     }
 
     func spokenText(fullText: String, suggested: String?) -> String? {

@@ -1,27 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <radialGradient id="base" cx="32%" cy="24%" r="82%">
-      <stop offset="0" stop-color="#9CF5FF"/>
-      <stop offset="0.3" stop-color="#6577F7"/>
-      <stop offset="0.68" stop-color="#6647C8"/>
-      <stop offset="1" stop-color="#241A55"/>
-    </radialGradient>
-    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.88"/>
-      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.1"/>
-      <stop offset="1" stop-color="#FD70C6" stop-opacity="0.58"/>
+    <linearGradient id="ocean" x1="150" y1="80" x2="850" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0D3946"/>
+      <stop offset="0.48" stop-color="#075E6A"/>
+      <stop offset="1" stop-color="#061A24"/>
     </linearGradient>
+    <linearGradient id="island" x1="275" y1="360" x2="750" y2="660" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EFFFFF"/>
+      <stop offset="0.48" stop-color="#63F1E6"/>
+      <stop offset="1" stop-color="#22AFC4"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="650" y1="230" x2="790" y2="385" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD875"/>
+      <stop offset="1" stop-color="#FF8E67"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 510) rotate(90) scale(390)">
+      <stop stop-color="#4FF5E4" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#4FF5E4" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
   </defs>
-  <circle cx="512" cy="512" r="470" fill="url(#base)"/>
-  <circle cx="512" cy="512" r="466" fill="none" stroke="url(#rim)" stroke-width="10"/>
-  <ellipse cx="356" cy="292" rx="178" ry="122" fill="#FFFFFF" opacity="0.13" transform="rotate(-22 356 292)"/>
-  <g fill="#FFFFFF">
-    <rect x="344" y="454" width="34" height="116" rx="17" opacity="0.8"/>
-    <rect x="408" y="410" width="34" height="204" rx="17" opacity="0.9"/>
-    <rect x="472" y="354" width="34" height="316" rx="17"/>
-    <rect x="536" y="392" width="34" height="240" rx="17" opacity="0.94"/>
-    <rect x="600" y="438" width="34" height="148" rx="17" opacity="0.84"/>
-    <rect x="664" y="474" width="34" height="76" rx="17" opacity="0.72"/>
+
+  <rect x="46" y="46" width="932" height="932" rx="222" fill="url(#ocean)"/>
+  <rect x="54" y="54" width="916" height="916" rx="214" fill="none" stroke="#CFFFFA" stroke-opacity=".18" stroke-width="8"/>
+  <circle cx="512" cy="510" r="390" fill="url(#glow)"/>
+  <circle cx="718" cy="310" r="82" fill="url(#sun)"/>
+  <circle cx="718" cy="310" r="108" fill="#FFC169" opacity=".13" filter="url(#soft)"/>
+
+  <!-- A floating horizon: island above, reflected voice below. -->
+  <path d="M236 548C310 438 397 385 512 385C627 385 714 438 788 548C704 525 612 514 512 514C412 514 320 525 236 548Z" fill="url(#island)"/>
+  <path d="M295 557C362 575 434 584 512 584C590 584 662 575 729 557C674 650 601 696 512 696C423 696 350 650 295 557Z" fill="#062A35" opacity=".92"/>
+  <path d="M306 609C367 635 435 648 512 648C589 648 657 635 718 609" fill="none" stroke="#61EDE5" stroke-opacity=".62" stroke-width="18" stroke-linecap="round"/>
+
+  <g fill="#EFFFFF">
+    <rect x="356" y="578" width="22" height="54" rx="11" opacity=".64"/>
+    <rect x="400" y="560" width="22" height="92" rx="11" opacity=".78"/>
+    <rect x="444" y="544" width="22" height="126" rx="11" opacity=".9"/>
+    <rect x="488" y="530" width="22" height="154" rx="11"/>
+    <rect x="532" y="544" width="22" height="126" rx="11" opacity=".9"/>
+    <rect x="576" y="560" width="22" height="92" rx="11" opacity=".78"/>
+    <rect x="620" y="578" width="22" height="54" rx="11" opacity=".64"/>
   </g>
+
+  <path d="M273 756C351 790 431 807 512 807C593 807 673 790 751 756" fill="none" stroke="#8DFFF4" stroke-opacity=".2" stroke-width="14" stroke-linecap="round"/>
+  <ellipse cx="326" cy="238" rx="154" ry="74" fill="#FFFFFF" opacity=".08" transform="rotate(-28 326 238)"/>
 </svg>

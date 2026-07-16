@@ -64,6 +64,10 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func startListening() async {
+        guard preferences.voiceInputEnabled else {
+            state.resetToIdle(message: "语音识别已关闭")
+            return
+        }
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
         await beginListening()
@@ -137,10 +141,19 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         )
 
         let input = audioEngine.inputNode
-        if preservingSpeechForBargeIn {
+        // Keep Apple's voice-processing path enabled during normal listening
+        // as well as barge-in. Its acoustic echo cancellation substantially
+        // reduces speech coming back through the Mac's own speakers.
+        if !input.isVoiceProcessingEnabled {
             try? input.setVoiceProcessingEnabled(true)
-        } else if input.isVoiceProcessingEnabled {
-            try? input.setVoiceProcessingEnabled(false)
+        }
+        if #available(macOS 14.0, *) {
+            // Echo cancellation stays enabled, but FuYu asks the system for the
+            // least possible media ducking so pressing Fn does not crush video volume.
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false,
+                duckingLevel: .min
+            )
         }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
@@ -150,7 +163,13 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
 
         prepareRecording(format: format)
-        Self.installAudioTap(on: input, format: format, request: request, recordingFile: recordingFile)
+        Self.installAudioTap(
+            on: input,
+            format: format,
+            request: request,
+            recordingFile: recordingFile,
+            service: self
+        )
         tapInstalled = true
 
         do {
@@ -569,11 +588,26 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         on input: AVAudioInputNode,
         format: AVAudioFormat,
         request: SFSpeechAudioBufferRecognitionRequest,
-        recordingFile: AVAudioFile?
+        recordingFile: AVAudioFile?,
+        service: VoiceService
     ) {
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request, recordingFile] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request, recordingFile, weak service] buffer, _ in
             request?.append(buffer)
             try? recordingFile?.write(from: buffer)
+            guard let channel = buffer.floatChannelData?.pointee else { return }
+            let frameCount = Int(buffer.frameLength)
+            guard frameCount > 0 else { return }
+            var sum: Float = 0
+            for index in 0..<frameCount {
+                let sample = channel[index]
+                sum += sample * sample
+            }
+            let rms = sqrt(sum / Float(frameCount))
+            let normalized = min(max((Double(rms) - 0.008) * 12.5, 0), 1)
+            Task { @MainActor [weak service] in
+                guard let service else { return }
+                service.state.audioLevel = service.state.audioLevel * 0.58 + normalized * 0.42
+            }
         }
     }
 
@@ -590,7 +624,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recognitionRequest = nil
         recordingFile = nil
         isListening = false
+        state.audioLevel = 0
         audioEngine.reset()
+        if audioEngine.inputNode.isVoiceProcessingEnabled {
+            try? audioEngine.inputNode.setVoiceProcessingEnabled(false)
+        }
     }
 
     private func handleRecognitionInterruption(_ description: String) {

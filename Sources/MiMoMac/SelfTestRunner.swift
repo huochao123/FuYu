@@ -109,6 +109,11 @@ enum SelfTestRunner {
         check(preferences.requireActionApproval, "Mac 操作确认默认开启")
         check(preferences.voiceActionApproval, "授权卡默认支持明确语音确认")
         check(preferences.voiceInterruption, "朗读与执行过程默认允许语音打断")
+        check(preferences.voiceInputEnabled, "主界面语音识别总开关默认开启")
+        check(MainWindowTheme.allCases.count == 3 && preferences.mainWindowTheme == .deepOcean, "三套主界面皮肤与深海默认主题")
+        check(MacCareTool.allCases.count == 9, "电脑管家九项本机工具注册")
+        let thermalMonitor = ThermalProcessMonitor()
+        check(thermalMonitor.summary == "正在建立基线", "发热进程后台监测初始状态")
         check(
             VoiceService.approvalDecision(for: "允许执行") == true
                 && VoiceService.approvalDecision(for: "不允许执行") == false

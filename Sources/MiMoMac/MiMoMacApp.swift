@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ? FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-approval-demo-history.json")
         : nil)
     private let preferences = AssistantPreferences()
+    private let thermalMonitor = ThermalProcessMonitor()
     private var panelController: FloatingPanelController?
     private var statusItem: NSStatusItem?
     private var assistantStatusItem: NSMenuItem?
@@ -31,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceService: VoiceService?
     private var runtime: AssistantRuntime?
     private var settingsWindowController: SettingsWindowController?
+    private var mainWindowController: MainWindowController?
+    private var feishuBridge: FeishuBridgeService?
+    private var remoteReplyObservers: [String: AnyCancellable] = [:]
     private var pendingDeepLink: URL?
     private var voiceActivity: NSUserActivity?
     private var cancellables: Set<AnyCancellable> = []
@@ -52,6 +56,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.voiceService = voiceService
         self.runtime = runtime
+        let feishuBridge = FeishuBridgeService(state: state)
+        feishuBridge.onMessage = { [weak self] message in self?.handleFeishuMessage(message) }
+        self.feishuBridge = feishuBridge
+        mainWindowController = MainWindowController(
+            state: state,
+            preferences: preferences,
+            thermalMonitor: thermalMonitor,
+            startVoice: { [weak self] in
+                guard let self else { return }
+                if self.state.phase == .listening {
+                    self.state.cancel()
+                } else {
+                    self.state.requestVoice()
+                }
+            },
+            sendText: { [weak self] text in self?.runtime?.handleTextInput(text) },
+            showSettings: { [weak self] in self?.showSettings() }
+        )
         state.modelLabel = preferences.modelProvider.badge
         preferences.$modelProvider
             .map(\.badge)
@@ -63,6 +85,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.setActivationPolicy(visible ? .regular : .accessory)
             }
             .store(in: &cancellables)
+        Publishers.CombineLatest(
+            preferences.$feishuEnabled.removeDuplicates(),
+            preferences.$feishuAppID.removeDuplicates()
+        )
+        .sink { [weak self] enabled, appID in
+            guard let self else { return }
+            self.feishuBridge?.configure(
+                enabled: enabled,
+                appID: appID.trimmingCharacters(in: .whitespacesAndNewlines),
+                appSecret: self.preferences.feishuAppSecret
+            )
+        }
+        .store(in: &cancellables)
 
         shortcutMonitor = GlobalShortcutMonitor(
             shortcut: preferences.pushToTalkShortcut,
@@ -90,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] phase in self?.updateStatusItem(for: phase) }
             .store(in: &cancellables)
         donateStartVoiceActivity()
+        thermalMonitor.start()
 
         if let pendingDeepLink {
             self.pendingDeepLink = nil
@@ -170,16 +206,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     exit(1)
                 }
             }
+        } else if CommandLine.arguments.contains("--mac-care-smoke-test") {
+            Task { @MainActor [weak self] in
+                do {
+                    let system = try await MacCareService.run(.systemCheck)
+                    let junk = try await MacCareService.run(.junkScan)
+                    guard !system.details.isEmpty, !junk.details.isEmpty else {
+                        throw NSError(domain: "FuYuMacCare", code: 1, userInfo: [NSLocalizedDescriptionKey: "本机扫描没有返回结果"])
+                    }
+                    print("浮屿电脑管家自检通过：九项工具本机直达；\(junk.headline)")
+                    self?.shortcutMonitor?.stop()
+                    exit(0)
+                } catch {
+                    fputs("浮屿电脑管家自检失败：\(error.localizedDescription)\n", stderr)
+                    self?.shortcutMonitor?.stop()
+                    exit(1)
+                }
+            }
         } else if let queryIndex = CommandLine.arguments.firstIndex(of: "--query"),
                   CommandLine.arguments.indices.contains(queryIndex + 1) {
             panelController?.showExpanded()
             runtime.handleTranscript(CommandLine.arguments[queryIndex + 1])
+        } else {
+            showMainWindow()
         }
 
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         statusItem?.isVisible = true
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showMainWindow() }
+        return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -214,6 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch Self.deepLinkAction(for: url) {
         case "listen": beginVoiceFromExternalTrigger()
         case "settings": showSettings()
+        case "home": showMainWindow()
         default: break
         }
     }
@@ -223,6 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch url.host?.lowercased() {
         case "listen": return "listen"
         case "settings": return "settings"
+        case "home": return "home"
         default: return nil
         }
     }
@@ -292,7 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutStatusItem = shortcut
         menu.addItem(.separator())
         menu.addItem(withTitle: "开始语音", action: #selector(startVoice), keyEquivalent: "")
-        menu.addItem(withTitle: "显示浮屿", action: #selector(showPanel), keyEquivalent: "")
+        menu.addItem(withTitle: "打开主界面", action: #selector(showMainWindow), keyEquivalent: "")
+        menu.addItem(withTitle: "显示悬浮气泡", action: #selector(showPanel), keyEquivalent: "")
         menu.addItem(withTitle: "个性化设置…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "运行交互演示", action: #selector(runDemo), keyEquivalent: "")
         menu.addItem(.separator())
@@ -351,6 +414,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController?.showExpanded()
     }
 
+    @objc private func showMainWindow() {
+        mainWindowController?.show()
+    }
+
     @objc private func startVoice() {
         state.requestVoice()
     }
@@ -403,8 +470,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(nil)
     }
 
+    private func handleFeishuMessage(_ message: FeishuInboundMessage) {
+        guard let runtime, let feishuBridge else { return }
+        let key = message.messageID.isEmpty ? UUID().uuidString : message.messageID
+        let initialCount = state.conversation.count
+        var observer: AnyCancellable?
+        observer = state.$conversation
+            .dropFirst()
+            .compactMap { items -> AppState.ConversationItem? in
+                guard items.count > initialCount, let last = items.last, last.kind != .user else { return nil }
+                return last
+            }
+            .first()
+            .sink { [weak self] item in
+                feishuBridge.reply(to: message, text: item.text)
+                self?.remoteReplyObservers[key] = nil
+            }
+        remoteReplyObservers[key] = observer
+        state.activitySource = "飞书"
+        runtime.handleTextInput(message.text)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         shortcutMonitor?.stop()
+        thermalMonitor.stop()
+        feishuBridge?.stop()
         runtime?.cancelCurrentWork()
     }
 }
