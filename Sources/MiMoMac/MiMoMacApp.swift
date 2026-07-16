@@ -125,6 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] phase in self?.updateStatusItem(for: phase) }
             .store(in: &cancellables)
         donateStartVoiceActivity()
+        thermalMonitor.onAlert = { [weak self] message in
+            guard let self else { return }
+            self.voiceService?.cancelAll()
+            self.state.presentNotification(message)
+        }
         thermalMonitor.start()
 
         if let pendingDeepLink {
@@ -209,12 +214,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if CommandLine.arguments.contains("--mac-care-smoke-test") {
             Task { @MainActor [weak self] in
                 do {
-                    let system = try await MacCareService.run(.systemCheck)
-                    let junk = try await MacCareService.run(.junkScan)
-                    guard !system.details.isEmpty, !junk.details.isEmpty else {
-                        throw NSError(domain: "FuYuMacCare", code: 1, userInfo: [NSLocalizedDescriptionKey: "本机扫描没有返回结果"])
+                    var reports: [MacCareReport] = []
+                    for tool in MacCareTool.allCases {
+                        let report = try await MacCareService.run(tool)
+                        guard report.tool == tool, !report.headline.isEmpty, !report.details.isEmpty else {
+                            throw NSError(
+                                domain: "FuYuMacCare",
+                                code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "\(tool.rawValue)没有返回真实扫描结果"]
+                            )
+                        }
+                        reports.append(report)
                     }
-                    print("浮屿电脑管家自检通过：九项工具本机直达；\(junk.headline)")
+                    let monitor = ThermalProcessMonitor()
+                    await monitor.refreshNow()
+                    guard monitor.lastUpdated != nil, monitor.processCount > 0, monitor.busiestProcess != "正在采样" else {
+                        throw NSError(domain: "FuYuMacCare", code: 2, userInfo: [NSLocalizedDescriptionKey: "发热监控没有取得真实进程样本"])
+                    }
+                    let testRoot = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("fuyu-organize-smoke-\(UUID().uuidString)", isDirectory: true)
+                    defer { try? FileManager.default.removeItem(at: testRoot) }
+                    try FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+                    let source = testRoot.appendingPathComponent("sample.txt")
+                    try Data("fuyu".utf8).write(to: source)
+                    let destinationDirectory = testRoot.appendingPathComponent("文档", isDirectory: true)
+                    let organization = MacCareService.organizeDownloads(
+                        [.init(source: source, destinationDirectory: destinationDirectory)],
+                        allowedRoot: testRoot
+                    )
+                    guard organization.moved == 1,
+                          FileManager.default.fileExists(atPath: destinationDirectory.appendingPathComponent("sample.txt").path) else {
+                        throw NSError(domain: "FuYuMacCare", code: 3, userInfo: [NSLocalizedDescriptionKey: "智能整理执行器没有真实移动测试文件"])
+                    }
+                    let actionable = reports.filter { !$0.recommendations.isEmpty }.count
+                    print("浮屿电脑管家自检通过：9/9 项返回真实本机结果，\(actionable) 项提供可执行建议；发热监控采样到 \(monitor.processCount) 个进程；智能整理执行器已真实移动并验证临时文件。")
                     self?.shortcutMonitor?.stop()
                     exit(0)
                 } catch {

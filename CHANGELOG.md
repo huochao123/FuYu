@@ -1,5 +1,21 @@
 # 更新日志 / Changelog
 
+## v0.5.3 — 2026-07-16
+
+- 九项电脑管家工具加入完整执行闭环：检测结果、预期收益、风险说明、确认执行、暂不处理与执行后验证。
+- 安全缓存可确认后移到废纸篓；下载文件可确认后按类型真实整理，避免覆盖同名文件。
+- 大文件、重复文件和应用缓存可直接在 Finder 定位；启动项打开系统设置；发热进程打开活动监视器。
+- 优化建议不再是静态文字，而是连接到垃圾扫描、长期下载文件定位和高负载进程检查等真实动作。
+- 文字、语音与系统通知拆分为三种独立交互：文字只留在聊天页；语音继续使用悬浮窗与麦克风；异常通知只显示文字，不监听也不朗读。
+- 发热监控使用真实进程采样，连续三次高 CPU 才提醒；监控连续失败三次也会发出纯文字异常通知。
+- 电脑管家自检升级为九项真实扫描、发热进程采样与临时文件实际整理验证。
+
+- Added a complete detect, explain, confirm, execute, and verify loop to all nine Mac Care tools.
+- Safe caches can be moved to Trash after confirmation; Downloads organization performs real collision-safe file moves.
+- Finder, Login Items, and Activity Monitor actions connect read-only findings to safe next steps.
+- Text, voice, and system notifications are now separate interaction channels.
+- Thermal alerts use real process samples and require three consecutive high-CPU readings.
+
 ## v0.5.2 — 2026-07-16
 
 - 电脑管家状态屏不再只显示一句结论：完整展示本次扫描返回的所有明细。

@@ -20,6 +20,7 @@ final class ThermalProcessMonitor: ObservableObject {
     @Published private(set) var memoryUsage = 0.0
     @Published private(set) var processCount = 0
     @Published private(set) var busiestProcess = "正在采样"
+    var onAlert: ((String) -> Void)?
 
     var isAlerting: Bool { !hotProcesses.isEmpty }
     var healthScore: Int {
@@ -34,6 +35,10 @@ final class ThermalProcessMonitor: ObservableObject {
         let hours = Int(ProcessInfo.processInfo.systemUptime / 3600)
         if hours >= 24 { return "\(hours / 24) 天 \(hours % 24) 小时" }
         return "\(hours) 小时"
+    }
+
+    nonisolated static func isSustainedHot(cpu: Double, consecutiveSamples: Int) -> Bool {
+        cpu >= 75 && consecutiveSamples >= 3
     }
 
     private struct History {
@@ -54,20 +59,34 @@ final class ThermalProcessMonitor: ObservableObject {
 
     private var history: [Int32: History] = [:]
     private var monitorTask: Task<Void, Never>?
+    private var notifiedHotPIDs: Set<Int32> = []
+    private var consecutiveFailures = 0
+    private var didNotifyFailure = false
 
     func start() {
         guard monitorTask == nil else { return }
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                do {
-                    let samples = try await Task.detached(priority: .utility) {
-                        try Self.readSamples()
-                    }.value
-                    self?.apply(samples)
-                } catch {
-                    self?.summary = "监测暂不可用"
-                }
+                await self?.refreshNow()
                 try? await Task.sleep(for: .seconds(12))
+            }
+        }
+    }
+
+    func refreshNow() async {
+        do {
+            let samples = try await Task.detached(priority: .utility) {
+                try Self.readSamples()
+            }.value
+            apply(samples)
+            consecutiveFailures = 0
+            didNotifyFailure = false
+        } catch {
+            consecutiveFailures += 1
+            summary = "监测暂不可用"
+            if consecutiveFailures >= 3, !didNotifyFailure {
+                didNotifyFailure = true
+                onAlert?("系统监控连续三次无法读取进程状态。电脑管家仍可手动检测，但后台发热提醒暂时不可用。")
             }
         }
     }
@@ -109,7 +128,7 @@ final class ThermalProcessMonitor: ObservableObject {
 
         history = history.filter { now.timeIntervalSince($0.value.lastSeen) < 48 }
         hotProcesses = history.compactMap { pid, item in
-            guard item.consecutive >= 3 else { return nil }
+            guard Self.isSustainedHot(cpu: item.lastCPU, consecutiveSamples: item.consecutive) else { return nil }
             return HotProcess(
                 pid: pid,
                 name: Self.friendlyName(item.name),
@@ -120,6 +139,12 @@ final class ThermalProcessMonitor: ObservableObject {
             )
         }
         .sorted { $0.cpu > $1.cpu }
+
+        let currentHotPIDs = Set(hotProcesses.map(\.pid))
+        if let newlyHot = hotProcesses.first(where: { !notifiedHotPIDs.contains($0.pid) }) {
+            onAlert?("检测到 \(newlyHot.name) 已连续高负载约 \(newlyHot.sustainedSamples * 12) 秒，CPU 当前约 \(Int(newlyHot.cpu))%。建议保存工作后在电脑管家查看“发热进程”。")
+        }
+        notifiedHotPIDs = currentHotPIDs
 
         if let hottest = hotProcesses.first {
             summary = "\(hottest.name) 持续 \(Int(hottest.cpu))%"

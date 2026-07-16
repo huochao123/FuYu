@@ -3,6 +3,12 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
+    enum InteractionSource: Equatable {
+        case voice
+        case text
+        case notification
+    }
+
     enum OverlayMode: Equatable {
         case orb
         case voice
@@ -53,6 +59,7 @@ final class AppState: ObservableObject {
     }
 
     @Published var isExpanded = false
+    @Published private(set) var interactionSource: InteractionSource = .voice
     @Published var phase: Phase = .idle
     @Published var audioLevel = 0.0
     @Published var activitySource = "本机"
@@ -110,6 +117,7 @@ final class AppState: ObservableObject {
 
     var overlayMode: OverlayMode {
         guard isExpanded else { return .orb }
+        if interactionSource == .notification { return .response }
         if showPermission { return .approval }
         if phase == .executing { return .task }
         if showHistory { return .history }
@@ -127,6 +135,7 @@ final class AppState: ObservableObject {
     }
 
     func beginListening(preservingApproval: Bool = false) {
+        interactionSource = .voice
         demoTask?.cancel()
         replyCollapseTask?.cancel()
         errorDismissTask?.cancel()
@@ -153,7 +162,7 @@ final class AppState: ObservableObject {
     func beginThinking(userText: String) {
         replyCollapseTask?.cancel()
         showPermission = false
-        isExpanded = true
+        isExpanded = interactionSource == .voice
         phase = .thinking
         audioLevel = 0
         transcript = userText
@@ -171,7 +180,7 @@ final class AppState: ObservableObject {
         approvalIsListening = false
         approvalHeardText = ""
         showPermission = true
-        isExpanded = true
+        isExpanded = interactionSource == .voice
         phase = .thinking
         appendConversation(.action, "等待确认：\(title)\n\(detail)")
         return id
@@ -180,7 +189,7 @@ final class AppState: ObservableObject {
     func beginExecution(title: String) {
         showPermission = false
         approvalIsListening = false
-        isExpanded = true
+        isExpanded = interactionSource == .voice
         phase = .executing
         audioLevel = 0
         taskTitle = title
@@ -229,7 +238,7 @@ final class AppState: ObservableObject {
     func presentSilentReply(_ text: String) {
         replyCollapseTask?.cancel()
         showPermission = false
-        isExpanded = true
+        isExpanded = interactionSource == .voice
         phase = .answered
         audioLevel = 0
         transcript = text
@@ -247,7 +256,7 @@ final class AppState: ObservableObject {
     func presentError(_ message: String) {
         errorDismissTask?.cancel()
         showPermission = false
-        isExpanded = true
+        isExpanded = interactionSource == .voice
         phase = .error
         audioLevel = 0
         transcript = message
@@ -290,6 +299,7 @@ final class AppState: ObservableObject {
         errorDismissTask?.cancel()
         errorDismissTask = nil
         showPermission = false
+        interactionSource = .voice
         approvalIsListening = false
         approvalHeardText = ""
         approvalID = nil
@@ -301,6 +311,33 @@ final class AppState: ObservableObject {
         steps = []
         showHistory = false
         isExpanded = false
+    }
+
+    func beginTextInteraction() {
+        interactionSource = .text
+        isExpanded = false
+        showHistory = false
+    }
+
+    func beginVoiceInteraction() {
+        interactionSource = .voice
+    }
+
+    func presentNotification(_ message: String, duration: Duration = .seconds(9)) {
+        replyCollapseTask?.cancel()
+        interactionSource = .notification
+        showPermission = false
+        showHistory = false
+        phase = .answered
+        audioLevel = 0
+        transcript = message
+        isExpanded = true
+        appendConversation(.action, "系统提醒：\(message)")
+        replyCollapseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, !Task.isCancelled, self.interactionSource == .notification else { return }
+            self.resetToIdle()
+        }
     }
 
     func openHistory() {

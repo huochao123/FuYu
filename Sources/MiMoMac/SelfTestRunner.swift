@@ -51,6 +51,22 @@ enum SelfTestRunner {
 
         state.presentSilentReply("完整文字只显示，不播报")
         check(state.phase == .answered && state.overlayMode == .voice, "静默回复使用气泡保持可读")
+        state.beginTextInteraction()
+        state.beginThinking(userText: "纯文字输入")
+        state.presentSilentReply("纯文字回复")
+        check(
+            state.interactionSource == .text && !state.isExpanded && state.conversation.last?.text == "纯文字回复",
+            "文字聊天不唤起悬浮窗或语音交互"
+        )
+        state.beginVoiceInteraction()
+        state.beginThinking(userText: "语音输入")
+        check(state.interactionSource == .voice && state.isExpanded, "语音输入继续使用悬浮窗")
+        state.presentNotification("发热监控提醒", duration: .seconds(30))
+        check(
+            state.interactionSource == .notification && state.overlayMode == .response && state.isExpanded,
+            "系统异常使用无麦克风的文字通知悬浮窗"
+        )
+        state.resetToIdle()
         state.openHistory()
         check(state.overlayMode == .history && !state.conversation.isEmpty, "聊天与执行记录面板")
         state.recordAssistantMessage("文字聊天自检")
@@ -114,6 +130,11 @@ enum SelfTestRunner {
         check(MacCareTool.allCases.count == 9, "电脑管家九项本机工具注册")
         let thermalMonitor = ThermalProcessMonitor()
         check(thermalMonitor.summary == "正在建立基线", "发热进程后台监测初始状态")
+        check(
+            !ThermalProcessMonitor.isSustainedHot(cpu: 90, consecutiveSamples: 2)
+                && ThermalProcessMonitor.isSustainedHot(cpu: 90, consecutiveSamples: 3),
+            "发热提醒只在连续三次真实高负载后触发"
+        )
         check(
             VoiceService.approvalDecision(for: "允许执行") == true
                 && VoiceService.approvalDecision(for: "不允许执行") == false

@@ -11,6 +11,7 @@ final class MainAssistantViewState: ObservableObject {
     @Published var completedTool: String?
     @Published var failedTool: String?
     @Published var toolSummary = ""
+    @Published var actionFeedback = ""
     @Published var lastReport: MacCareReport?
     @Published var hoveredManagerTool: String?
     var maintenanceTask: Task<Void, Never>?
@@ -647,21 +648,18 @@ struct MainAssistantView: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 10)
-                if !failed,
-                   title == MacCareTool.junkScan.rawValue,
-                   let plan = viewState.lastReport?.cleanupPlan {
-                    Button("确认移到废纸篓") { confirmSafeCleanup(plan) }
-                        .buttonStyle(MainGlassActionButtonStyle(tint: .mint, prominent: true, height: 34, cornerRadius: 11))
-                }
-                Button("返回总览") { resetManagerScreen() }
+                Button("暂不处理") { resetManagerScreen() }
                     .buttonStyle(MainGlassActionButtonStyle(tint: themeAccent, prominent: false, height: 30, cornerRadius: 10))
             }
 
             Divider().opacity(0.24)
 
-            if let details = viewState.lastReport?.details, !details.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 9) {
+                    if let details = viewState.lastReport?.details, !details.isEmpty {
+                        Text("检测明细")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(.secondary)
                         ForEach(Array(details.enumerated()), id: \.offset) { index, detail in
                             HStack(alignment: .top, spacing: 8) {
                                 Text("\(index + 1)")
@@ -680,20 +678,62 @@ struct MainAssistantView: View {
                             .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                         }
                     }
+
+                    if !failed, let report = viewState.lastReport, !report.recommendations.isEmpty {
+                        Divider().opacity(0.22).padding(.vertical, 2)
+                        Text("建议操作 · 执行前由你确认")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                        ForEach(report.recommendations) { recommendation in
+                            recommendationCard(recommendation, report: report)
+                        }
+                    } else if !failed {
+                        Label("当前没有必须执行的操作", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.green)
+                            .padding(.vertical, 8)
+                    }
+
+                    if !viewState.actionFeedback.isEmpty {
+                        Label(viewState.actionFeedback, systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.green)
+                            .padding(9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+                    }
                 }
-                .frame(minHeight: 94, maxHeight: 150)
-            } else {
-                Label(failed ? "没有可显示的明细" : "操作结果已完整显示", systemImage: failed ? "exclamationmark.circle" : "checkmark.circle")
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .center)
             }
+            .frame(minHeight: 110, maxHeight: 210)
         }
+    }
+
+    private func recommendationCard(_ recommendation: MacCareRecommendation, report: MacCareReport) -> some View {
+        HStack(alignment: .center, spacing: 11) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(recommendation.title)
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                Label(recommendation.benefit, systemImage: "arrow.up.right.circle.fill")
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(.mint)
+                Label(recommendation.risk, systemImage: "shield.lefthalf.filled")
+                    .font(.system(size: 8.5, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(recommendation.buttonTitle) {
+                performRecommendation(recommendation, report: report)
+            }
+            .buttonStyle(MainGlassActionButtonStyle(tint: themeAccent, prominent: true, height: 32, cornerRadius: 10))
+        }
+        .padding(10)
+        .background(themeAccent.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(themeAccent.opacity(0.12), lineWidth: 0.7))
     }
 
     private func dashboardSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-        .frame(maxWidth: .infinity, minHeight: 220, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 250, alignment: .leading)
         .padding(18)
         .background(
             LinearGradient(
@@ -733,6 +773,7 @@ struct MainAssistantView: View {
             viewState.completedTool = nil
             viewState.failedTool = nil
             viewState.toolSummary = ""
+            viewState.actionFeedback = ""
             viewState.lastReport = nil
         }
     }
@@ -962,6 +1003,7 @@ struct MainAssistantView: View {
             viewState.completedTool = nil
             viewState.failedTool = nil
             viewState.toolSummary = "正在直接读取本机数据；点击正在运行的卡片可以随时停止。"
+            viewState.actionFeedback = ""
             viewState.lastReport = nil
         }
         state.activitySource = "电脑管家 · \(title)"
@@ -1103,6 +1145,69 @@ struct MainAssistantView: View {
         .background((failed ? Color.red : Color.green).opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 
+    private func performRecommendation(_ recommendation: MacCareRecommendation, report: MacCareReport) {
+        switch recommendation.action {
+        case .cleanSafe:
+            guard let plan = report.cleanupPlan else {
+                viewState.actionFeedback = "清理预览已失效，请重新扫描。"
+                return
+            }
+            confirmSafeCleanup(plan)
+        case let .organizeDownloads(moves):
+            executeOrganization(moves)
+        case let .revealFiles(urls):
+            let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !existing.isEmpty else {
+                viewState.actionFeedback = "这些文件的位置已经发生变化，请重新扫描。"
+                return
+            }
+            NSWorkspace.shared.activateFileViewerSelecting(existing)
+            viewState.actionFeedback = "已在 Finder 中定位 \(existing.count) 个项目；浮屿没有删除任何文件。"
+        case .openLoginItems:
+            let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!
+            if NSWorkspace.shared.open(url) {
+                viewState.actionFeedback = "已打开“登录项与扩展”，请按名称确认后再关闭不需要的项目。"
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+                viewState.actionFeedback = "已打开系统设置，请进入“通用 → 登录项与扩展”。"
+            }
+        case .openActivityMonitor:
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+            viewState.actionFeedback = "已打开活动监视器；请先保存工作，再决定是否结束高负载应用。"
+        case let .runTool(tool):
+            beginManagerTool(tool.rawValue, prompt: "")
+        }
+    }
+
+    private func executeOrganization(_ moves: [FileOrganizationMove]) {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+            viewState.activeTool = MacCareTool.organize.rawValue
+            viewState.completedTool = nil
+            viewState.failedTool = nil
+            viewState.toolSummary = "正在按确认的分类方案移动下载文件；不会覆盖同名文件。"
+            viewState.actionFeedback = ""
+        }
+        viewState.maintenanceTask = Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                MacCareService.organizeDownloads(moves)
+            }.value
+            guard !Task.isCancelled else { return }
+            let summary = "已整理 \(result.moved) 个文件，跳过 \(result.skipped) 个"
+            var details = ["成功移动：\(result.moved) 个", "因同名或位置变化跳过：\(result.skipped) 个"]
+            details.append(contentsOf: result.failures.prefix(20).map { "失败：\($0)" })
+            let report = MacCareReport(tool: .organize, headline: summary, details: details)
+            state.recordActionStatus("电脑管家 · 智能整理\n\(report.displayText)")
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+                viewState.toolSummary = summary
+                viewState.lastReport = report
+                viewState.completedTool = MacCareTool.organize.rawValue
+                viewState.activeTool = nil
+                viewState.actionFeedback = "整理已执行并验证；没有覆盖或删除文件。"
+            }
+            viewState.maintenanceTask = nil
+        }
+    }
+
     private func confirmSafeCleanup(_ plan: LevelScanResult) {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
             viewState.activeTool = MacCareTool.junkScan.rawValue
@@ -1115,11 +1220,21 @@ struct MainAssistantView: View {
             guard !Task.isCancelled else { return }
             let summary = "已将 \(result.entries.count) 项、约 \(ByteCountFormatter.string(fromByteCount: result.bytesFreed, countStyle: .file)) 移到废纸篓"
             state.recordActionStatus("电脑管家 · 安全清理\n\(summary)\n跳过 \(result.skippedPaths.count) 项；操作记录已保存在本机。")
+            let report = MacCareReport(
+                tool: .junkScan,
+                headline: summary,
+                details: [
+                    "已移到废纸篓：\(result.entries.count) 项",
+                    "实际处理容量：\(ByteCountFormatter.string(fromByteCount: result.bytesFreed, countStyle: .file))",
+                    "安全校验跳过：\(result.skippedPaths.count) 项"
+                ]
+            )
             withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
                 viewState.toolSummary = summary
                 viewState.completedTool = MacCareTool.junkScan.rawValue
                 viewState.activeTool = nil
-                viewState.lastReport = nil
+                viewState.lastReport = report
+                viewState.actionFeedback = "清理已执行并验证；所有项目均移到废纸篓，可恢复。"
             }
             viewState.maintenanceTask = nil
         }

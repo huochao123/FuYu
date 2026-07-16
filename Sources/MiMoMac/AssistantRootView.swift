@@ -61,7 +61,7 @@ private struct ResponseCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack {
-                Label("文字回复", systemImage: "text.bubble.fill")
+                Label(state.interactionSource == .notification ? "系统提醒" : "文字回复", systemImage: state.interactionSource == .notification ? "exclamationmark.bubble.fill" : "text.bubble.fill")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(state.phaseColor)
                 Spacer()
@@ -80,14 +80,19 @@ private struct ResponseCard: View {
             .frame(maxHeight: 78)
 
             HStack(spacing: 10) {
-                Button("关闭") { state.cancel() }
-                    .buttonStyle(SoftButtonStyle())
-                Button {
-                    state.requestVoice()
-                } label: {
-                    Label("继续问", systemImage: "mic.fill")
+                if state.interactionSource == .notification {
+                    Button("知道了") { state.resetToIdle() }
+                        .buttonStyle(AccentButtonStyle())
+                } else {
+                    Button("关闭") { state.cancel() }
+                        .buttonStyle(SoftButtonStyle())
+                    Button {
+                        state.requestVoice()
+                    } label: {
+                        Label("继续问", systemImage: "mic.fill")
+                    }
+                    .buttonStyle(AccentButtonStyle())
                 }
-                .buttonStyle(AccentButtonStyle())
             }
         }
         .padding(17)

@@ -68,10 +68,13 @@ final class AssistantRuntime {
     }
 
     func handleTranscript(_ text: String) {
+        state.beginVoiceInteraction()
         handleUserInput(text, shouldSpeak: true, isVoice: true)
     }
 
     func handleTextInput(_ text: String) {
+        voice.cancelAll()
+        state.beginTextInteraction()
         handleUserInput(text, shouldSpeak: false, isVoice: false)
     }
 
@@ -266,7 +269,7 @@ final class AssistantRuntime {
                 originalRequest: originalRequest,
                 shouldSpeak: shouldSpeak
             )
-            if preferences.voiceActionApproval {
+            if preferences.voiceActionApproval, shouldSpeak {
                 Task { @MainActor [weak self] in
                     await self?.voice.startListeningForApproval()
                 }
@@ -373,8 +376,10 @@ final class AssistantRuntime {
         voice.cancelAll()
         state.beginExecution(title: action.title)
         activeAction = action
-        Task { @MainActor [weak self] in
-            await self?.voice.startListeningForTaskInterruption()
+        if action.shouldSpeak {
+            Task { @MainActor [weak self] in
+                await self?.voice.startListeningForTaskInterruption()
+            }
         }
 
         requestTask?.cancel()
@@ -434,7 +439,9 @@ final class AssistantRuntime {
             voice.speak(spoken, displayText: text)
         } else {
             state.presentSilentReply(text)
-            voice.continueAfterSilentReply()
+            if state.interactionSource == .voice {
+                voice.continueAfterSilentReply()
+            }
         }
     }
 }
