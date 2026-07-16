@@ -1,5 +1,19 @@
 # 更新日志 / Changelog
 
+## v0.6.1 — 2026-07-16
+
+- 重构为参考 Hermes 成熟方案的四层本机记忆：即时对话、跨重启工作任务、长期习惯、完整会话归档与相关历史检索。
+- “去吧、继续、这个、为什么、我刚让你干嘛”等短句会绑定最近未完成任务，不再被当作新会话。
+- 当前任务、执行状态和浮屿上一轮说明会单独持久化，重启应用后仍能继续。
+- 超出即时对话窗口的原始消息不再直接丢失，而是写入本机 JSONL 归档，按请求检索真实原话。
+- 修复应用启动后先运行电脑管家时，工具结果可能在旧记忆加载前覆盖模型记忆文件的问题。
+- 下载文件夹分析现在直接进入浮屿本机智能整理扫描，不再错误转交 Hermes。
+- 记忆设置页明确展示即时原文、工作记忆、永久习惯和会话检索的分层关系。
+
+- Rebuilt memory around working context, persistent task focus, curated user memory, and searchable episodic archives.
+- Context-dependent phrases now resume the latest task instead of starting a blank conversation.
+- Fixed a startup ordering bug that could overwrite model memory when a local tool ran first.
+
 ## v0.6.0 — 2026-07-16
 
 - 浮屿拥有明确的本机助手身份和动态能力清单，能准确说明自己能做什么、哪些操作需要确认，以及何时才需要 Hermes。

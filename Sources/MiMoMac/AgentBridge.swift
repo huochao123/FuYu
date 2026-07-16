@@ -63,6 +63,8 @@ actor MiMoAssistantClient {
         能力边界：只读检测可直接执行；音量等可逆设置可直接执行；清理垃圾、移动文件必须先确认；删除、发送、购买、发布和安全设置属于高风险操作；跨应用复杂任务才交给 Hermes。
         用户询问“你是谁、能做什么”时，要明确回答自己是浮屿，并优先介绍 Mac 本机能力。
         用户基于电脑管家结果继续提问时，直接分析上面的结构化结果，不要让用户去聊天记录里重新寻找。
+        连续对话规则：用户说“去吧、继续、就这个、刚才那个、为什么、为啥、现在呢”等短句时，必须优先承接上下文中最近一个未完成任务或上一句明确对象。上下文已经给出答案时，禁止让用户重新解释一遍。
+        记忆规则：区分“当前连续对话”和“较早相关记录”；先延续当前任务，再使用较早记录补充长期背景。不要把历史计划误说成已执行，仍以真实工具结果为准。
         浮屿会偏向 Mac 场景并可主动提醒真实监控异常，但不得声称自己在后台做了尚未实际运行的检查，更不得静默清理、移动或删除文件。
         回答长度偏好：\(profile.answerLength.prompt)
         用户个性化偏好：\(profile.customPrompt.isEmpty ? "无" : profile.customPrompt)
@@ -134,6 +136,7 @@ actor MiMoAssistantClient {
     func recordActionResult(title: String, result: String, succeeded: Bool, profile: AssistantProfile) throws {
         actionAwaitingVerifiedResult = false
         guard profile.contextEnabled else { return }
+        try loadPersistentMemoryIfNeeded(profile: profile)
         let prefix = succeeded ? "实际执行成功" : "实际执行失败"
         memory.append(.init(role: "assistant", content: "\(prefix)：\(title)。\(result)"))
         memory = Array(memory.suffix(max(profile.contextTurns * 2, 4)))

@@ -739,10 +739,10 @@ struct SettingsView: View {
         VStack(spacing: 14) {
             settingsCard {
                 Toggle(isOn: $preferences.contextEnabled) {
-                    settingLabel("启用对话上下文", detail: "让浮屿理解你刚才说过的内容")
+                    settingLabel("启用连续对话", detail: "让“去吧、继续、为什么”自然承接上一任务")
                 }
                 Divider()
-                settingRow("保留轮数", detail: "轮数越多，上下文消耗越高") {
+                settingRow("即时原文", detail: "较早内容仍会从本机会话归档按需检索") {
                     HStack {
                         Slider(value: $preferences.contextTurns, in: 2...24, step: 1).frame(width: 150)
                         Text("\(Int(preferences.contextTurns)) 轮")
@@ -791,7 +791,7 @@ struct SettingsView: View {
             }
             settingsCard {
                 Toggle(isOn: $preferences.persistentMemory) {
-                    settingLabel("跨启动对话", detail: "关闭应用后仍保留最近聊天，与永久习惯分开")
+                    settingLabel("跨启动工作记忆", detail: "保留当前任务、会话归档和相关历史检索，与永久习惯分开")
                 }
                 Divider()
                 HStack {
@@ -803,7 +803,7 @@ struct SettingsView: View {
                     Button("清除…", role: .destructive) { viewState.showClearConfirmation = true }
                 }
             }
-            Label("永久习惯与最近对话都只保存在本机，不保存录音；可随时查看和删除。", systemImage: "lock.shield")
+            Label("采用工作记忆、任务状态、长期习惯和会话检索四层结构；全部只保存在本机，不保存录音。", systemImage: "lock.shield")
                 .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
         }
     }

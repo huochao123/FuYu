@@ -80,6 +80,7 @@ final class AssistantRuntime {
 
     func clearMemory() async throws {
         try await modelClient.clearMemory()
+        try state.clearConversationMemory()
     }
 
     func handleTranscript(_ text: String) {
@@ -198,6 +199,7 @@ final class AssistantRuntime {
         } else {
             effectiveRequest = cleaned
         }
+        let requestForModel = state.contextualizedRequest(effectiveRequest)
 
         cancelCurrentWork(preservingClarification: true)
         state.beginThinking(userText: cleaned)
@@ -206,9 +208,11 @@ final class AssistantRuntime {
             guard let self else { return }
             do {
                 let capabilities = await LocalMacCapabilityManifest.current()
-                let localContext = capabilities.prompt + "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
+                let localContext = capabilities.prompt
+                    + "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
+                    + "\n\n对话记忆：\n" + self.state.conversationContextPrompt(for: effectiveRequest)
                 let decision = try await self.modelClient.decide(
-                    for: effectiveRequest,
+                    for: requestForModel,
                     profile: self.preferences.profile,
                     localContext: localContext
                 )
@@ -286,6 +290,7 @@ final class AssistantRuntime {
     ) {
         let displayTitle = Self.cleanActionTitle(title)
         if preferences.requireActionApproval {
+            state.markTaskFocus(.awaitingApproval)
             let approvalID = state.presentApproval(title: displayTitle, detail: detail)
             pendingAction = PendingAction(
                 approvalID: approvalID,
@@ -399,6 +404,7 @@ final class AssistantRuntime {
             do {
                 switch command {
                 case let .scan(tool):
+                    self.state.markTaskFocus(.executing)
                     self.state.beginLocalExecution(title: tool.rawValue)
                     self.state.updateExecution(progress: 0.48, step: 1)
                     let report = try await Task.detached(priority: .userInitiated) {
@@ -408,6 +414,7 @@ final class AssistantRuntime {
                     self.state.updateExecution(progress: 0.94, step: 2)
                     self.state.publishMacCareReport(report)
                     self.state.recordActionStatus(report.displayText)
+                    self.state.markTaskFocus(.completed)
                     try? await self.modelClient.recordActionResult(
                         title: "电脑管家 · \(tool.rawValue)",
                         result: report.displayText,
@@ -416,25 +423,31 @@ final class AssistantRuntime {
                     )
                     self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
                 case let .volume(adjustment):
+                    self.state.markTaskFocus(.executing)
                     self.state.beginLocalExecution(title: "音量控制")
                     let result = try await LocalMacControlService.shared.adjustVolume(adjustment)
                     self.state.updateExecution(progress: 1, step: 2)
                     self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    self.state.markTaskFocus(.completed)
                     self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
                 case let .brightness(adjustment):
+                    self.state.markTaskFocus(.executing)
                     self.state.beginLocalExecution(title: "屏幕亮度")
                     let result = try await LocalMacControlService.shared.adjustBrightness(adjustment)
                     self.state.updateExecution(progress: 1, step: 2)
                     self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    self.state.markTaskFocus(.completed)
                     self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
                 case let .applyLatest(tool):
                     guard let report = self.state.latestMacCareReports[tool] else {
+                        self.state.markTaskFocus(.executing)
                         self.state.beginLocalExecution(title: tool.rawValue)
                         let scanned = try await Task.detached(priority: .userInitiated) {
                             try await MacCareService.run(tool)
                         }.value
                         self.state.publishMacCareReport(scanned)
                         self.state.recordActionStatus(scanned.displayText)
+                        self.state.markTaskFocus(.completed)
                         self.deliverReply(
                             scanned.displayText + "\n\n请查看建议并确认后再执行；浮屿不会静默修改文件。",
                             suggestedSpoken: "检测完成，请确认建议后再执行。",
@@ -466,6 +479,7 @@ final class AssistantRuntime {
             } catch is CancellationError {
                 return
             } catch {
+                self.state.markTaskFocus(.failed)
                 self.state.recordActionStatus("浮屿本机执行失败：\(error.localizedDescription)", failed: true)
                 self.state.presentError(error.localizedDescription)
             }
@@ -483,6 +497,7 @@ final class AssistantRuntime {
         default: modifiesFiles = false
         }
         if modifiesFiles {
+            state.markTaskFocus(.awaitingApproval)
             let detail = "收益：\(recommendation.benefit)\n风险：\(recommendation.risk)"
             let approvalID = state.presentApproval(title: recommendation.title, detail: detail)
             pendingLocalAction = .init(
@@ -516,6 +531,7 @@ final class AssistantRuntime {
         pendingLocalAction = nil
         voice.cancelAll()
         state.beginLocalExecution(title: pending.title)
+        state.markTaskFocus(.executing)
         requestTask?.cancel()
         requestTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -524,6 +540,7 @@ final class AssistantRuntime {
                 try Task.checkCancellation()
                 self.state.publishMacCareReport(report)
                 self.state.recordActionStatus(report.displayText)
+                self.state.markTaskFocus(.completed)
                 try? await self.modelClient.recordActionResult(
                     title: pending.title,
                     result: report.displayText,
@@ -534,6 +551,7 @@ final class AssistantRuntime {
             } catch is CancellationError {
                 return
             } catch {
+                self.state.markTaskFocus(.failed)
                 self.state.recordActionStatus("本机执行失败：\(error.localizedDescription)", failed: true)
                 self.state.presentError(error.localizedDescription)
             }
@@ -580,6 +598,7 @@ final class AssistantRuntime {
         pendingAction = nil
         voice.cancelAll()
         state.beginExecution(title: action.title)
+        state.markTaskFocus(.executing)
         activeAction = action
         if action.shouldSpeak {
             Task { @MainActor [weak self] in
@@ -609,6 +628,7 @@ final class AssistantRuntime {
                 try? await Task.sleep(for: .milliseconds(220))
                 try Task.checkCancellation()
                 self.state.recordActionStatus("执行成功：\(action.title)\n\(result)")
+                self.state.markTaskFocus(.completed)
                 try? await self.modelClient.recordActionResult(
                     title: action.title,
                     result: result,
@@ -628,6 +648,7 @@ final class AssistantRuntime {
                 self.activeAction = nil
                 let message = error.localizedDescription
                 self.state.recordActionStatus("执行失败：\(action.title)\n\(message)", failed: true)
+                self.state.markTaskFocus(.failed)
                 try? await self.modelClient.recordActionResult(
                     title: action.title,
                     result: message,

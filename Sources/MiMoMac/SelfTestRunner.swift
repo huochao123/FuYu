@@ -15,7 +15,13 @@ enum SelfTestRunner {
         }
 
         let historyURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-history-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: historyURL) }
+        let archiveURL = historyURL.deletingPathExtension().appendingPathExtension("archive.jsonl")
+        let focusURL = historyURL.deletingPathExtension().appendingPathExtension("task-focus.json")
+        defer {
+            try? FileManager.default.removeItem(at: historyURL)
+            try? FileManager.default.removeItem(at: archiveURL)
+            try? FileManager.default.removeItem(at: focusURL)
+        }
         let state = AppState(historyURL: historyURL)
         check(state.overlayMode == .orb, "初始状态是悬浮球")
         state.beginListening()
@@ -75,7 +81,11 @@ enum SelfTestRunner {
         let restoredState = AppState(historyURL: historyURL)
         check(restoredState.conversation.contains(where: { $0.text == "文字聊天自检" }), "聊天页面跨启动加载本机历史")
         let interruptedURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-interrupted-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: interruptedURL) }
+        defer {
+            try? FileManager.default.removeItem(at: interruptedURL)
+            try? FileManager.default.removeItem(at: interruptedURL.deletingPathExtension().appendingPathExtension("archive.jsonl"))
+            try? FileManager.default.removeItem(at: interruptedURL.deletingPathExtension().appendingPathExtension("task-focus.json"))
+        }
         let interruptedState = AppState(historyURL: interruptedURL)
         interruptedState.beginExecution(title: "中断自检")
         let recoveredInterruptedState = AppState(historyURL: interruptedURL)
@@ -140,11 +150,50 @@ enum SelfTestRunner {
                 && state.macCareReportVersion == 1,
             "电脑管家结果同步到助手共享上下文"
         )
+        state.recordAssistantMessage("我把这个重复文件甄别任务交给执行流程。")
+        state.beginTextInteraction()
+        state.beginThinking(userText: "去吧")
+        let continuityContext = state.conversationContextPrompt(for: "去吧")
+        check(
+            continuityContext.contains("重复文件甄别任务")
+                && continuityContext.contains("用户：去吧")
+                && continuityContext.contains("必须承接"),
+            "短指令携带最近任务上下文，不再把每句话当新会话"
+        )
+        for index in 0..<30 {
+            state.recordActionStatus("较早任务 \(index)：下载文件夹分析")
+        }
+        let retrievedContext = state.conversationContextPrompt(for: "之前下载文件夹分析怎么样")
+        check(
+            retrievedContext.contains("较早记录") && retrievedContext.contains("下载文件夹分析"),
+            "超过即时窗口后仍可从本机历史检索相关任务"
+        )
+        let continuityURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-continuity-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: continuityURL)
+            try? FileManager.default.removeItem(at: continuityURL.deletingPathExtension().appendingPathExtension("archive.jsonl"))
+            try? FileManager.default.removeItem(at: continuityURL.deletingPathExtension().appendingPathExtension("task-focus.json"))
+        }
+        let continuityState = AppState(historyURL: continuityURL)
+        continuityState.beginTextInteraction()
+        continuityState.beginThinking(userText: "把重复文件仔细甄别后移到废纸篓")
+        continuityState.presentSilentReply("我会先确认保留规则，再等待你同意执行。")
+        continuityState.beginThinking(userText: "你没记忆吗，每一句话都失忆")
+        continuityState.presentSilentReply("我会检查连续对话记忆，但不会丢掉原任务。")
+        let resumedContinuityState = AppState(historyURL: continuityURL)
+        let resumedRequest = resumedContinuityState.contextualizedRequest("去吧")
+        check(
+            resumedRequest.contains("不是新会话")
+                && resumedRequest.contains("重复文件仔细甄别")
+                && resumedRequest.contains("不会丢掉原任务"),
+            "跨重启工作记忆会让去吧继续上一任务"
+        )
         check(
             LocalCommandRouter.command(for: "把音量调到 35%") == .volume(.set(35))
                 && LocalCommandRouter.command(for: "检查一下启动项") == .scan(.loginItems)
                 && LocalCommandRouter.command(for: "删除重复文件") == .scan(.duplicates)
-                && LocalCommandRouter.command(for: "你能做什么") == .capabilities,
+                && LocalCommandRouter.command(for: "你能做什么") == .capabilities
+                && LocalCommandRouter.command(for: "帮我分析下载文件夹") == .scan(.organize),
             "基础 Mac 指令优先路由到浮屿本机能力且重复文件不直接删除"
         )
         let unavailableManifest = LocalMacCapabilityManifest(brightnessAvailable: false).prompt

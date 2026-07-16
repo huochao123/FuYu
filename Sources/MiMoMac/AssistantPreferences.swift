@@ -379,7 +379,7 @@ final class AssistantPreferences: ObservableObject {
         endpoint = ""
         contextEnabled = defaults.object(forKey: Key.contextEnabled) as? Bool ?? true
         contextTurns = min(max(defaults.object(forKey: Key.contextTurns) as? Double ?? 8, 2), 24)
-        persistentMemory = defaults.object(forKey: Key.persistentMemory) as? Bool ?? false
+        persistentMemory = defaults.object(forKey: Key.persistentMemory) as? Bool ?? true
         permanentHabitsEnabled = defaults.object(forKey: Key.permanentHabitsEnabled) as? Bool ?? true
         autoSubmit = defaults.object(forKey: Key.autoSubmit) as? Bool ?? true
         silenceTimeout = min(max(defaults.object(forKey: Key.silenceTimeout) as? Double ?? 5, 3), 12)

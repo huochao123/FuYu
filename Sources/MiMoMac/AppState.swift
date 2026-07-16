@@ -91,9 +91,13 @@ final class AppState: ObservableObject {
     private var errorDismissTask: Task<Void, Never>?
     private var isRunningDemo = false
     private let conversationHistoryURL: URL
+    private let memorySystem: FuYuMemorySystem
+    private var isInitializingMemory = true
 
     init(historyURL: URL? = nil) {
-        conversationHistoryURL = historyURL ?? Self.defaultConversationHistoryURL
+        let resolvedHistoryURL = historyURL ?? Self.defaultConversationHistoryURL
+        conversationHistoryURL = resolvedHistoryURL
+        memorySystem = FuYuMemorySystem(historyURL: resolvedHistoryURL)
         if let stored = Self.loadConversationHistory(from: conversationHistoryURL), !stored.isEmpty {
             conversation = stored
         } else {
@@ -104,6 +108,9 @@ final class AppState: ObservableObject {
         }
         markInterruptedActionIfNeeded()
         persistConversationHistory()
+        memorySystem.bootstrapArchiveIfNeeded(with: conversation)
+        memorySystem.bootstrapWorkingFocusIfNeeded(with: conversation)
+        isInitializingMemory = false
     }
 
     var phaseColor: Color {
@@ -397,13 +404,72 @@ final class AppState: ObservableObject {
         }.joined(separator: "\n")
     }
 
+    func conversationContextPrompt(for query: String) -> String {
+        guard !conversation.isEmpty else { return "尚无历史对话。" }
+        let recentCount = 20
+        let recentStart = max(0, conversation.count - recentCount)
+        let recent = Array(conversation[recentStart...])
+        let relevant = memorySystem.relevantHistory(
+            for: query,
+            excluding: Set(recent.map(\.id)),
+            limit: 8
+        )
+
+        func render(_ items: [ConversationItem]) -> String {
+            items.map { item in
+                let role: String
+                switch item.kind {
+                case .user: role = "用户"
+                case .assistant: role = "浮屿"
+                case .action: role = "真实工具/任务状态"
+                case .error: role = "执行错误"
+                }
+                let compact = item.text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                return "\(role)：\(String(compact.prefix(650)))"
+            }.joined(separator: "\n")
+        }
+
+        let relevantText = relevant.isEmpty ? "无额外匹配记录。" : render(relevant)
+        return """
+        当前连续对话（按时间顺序，必须承接代词、追问和“继续/去吧/这个/为什么”等短句）：
+        \(render(recent))
+
+        当前工作记忆（跨重启保留）：
+        \(memorySystem.focusPrompt)
+
+        与当前请求相关的较早记录（仅作为历史，不要误当成刚发生）：
+        \(relevantText)
+        """
+    }
+
+    func contextualizedRequest(_ text: String) -> String {
+        memorySystem.contextualizedRequest(text)
+    }
+
+    func markTaskFocus(_ status: FuYuMemorySystem.TaskFocus.Status) {
+        memorySystem.markFocus(status)
+    }
+
+    func clearConversationMemory() throws {
+        conversation.removeAll()
+        try memorySystem.clear()
+        if FileManager.default.fileExists(atPath: conversationHistoryURL.path) {
+            try FileManager.default.removeItem(at: conversationHistoryURL)
+        }
+    }
+
     private func appendConversation(_ kind: ConversationItem.Kind, _ text: String) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         if conversation.last?.kind == kind, conversation.last?.text == value { return }
-        conversation.append(.init(kind: kind, text: value))
+        let item = ConversationItem(kind: kind, text: value)
+        conversation.append(item)
         conversation = Array(conversation.suffix(500))
         persistConversationHistory()
+        guard !isInitializingMemory else { return }
+        memorySystem.append(item)
+        if kind == .user { memorySystem.observeUserMessage(value) }
+        if kind == .assistant { memorySystem.observeAssistantReply(value) }
     }
 
     private func persistConversationHistory() {
