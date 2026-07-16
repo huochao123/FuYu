@@ -616,34 +616,37 @@ struct MainAssistantView: View {
     }
 
     private func resultDashboardContent(_ title: String, failed: Bool) -> some View {
-        HStack(spacing: 16) {
-            ZStack {
-                Circle().fill((failed ? Color.red : Color.green).opacity(0.12))
-                Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
-                    .font(.system(size: 31, weight: .medium))
-                    .foregroundStyle(failed ? .red : .green)
-                    .symbolEffect(.bounce, value: title)
-            }
-            .frame(width: 72, height: 72)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(failed ? "需要处理" : "检测完成")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(failed ? .red : .green)
-                Text(title)
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                Text(viewState.toolSummary.isEmpty ? (failed ? "本次检测没有完成，请稍后重试。" : "本机检测完成，没有自动修改任何内容。") : viewState.toolSummary)
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if let details = viewState.lastReport?.details.prefix(2), !details.isEmpty {
-                    Text(details.joined(separator: "  ·  "))
-                        .font(.system(size: 8.5, design: .rounded))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 13) {
+                ZStack {
+                    Circle().fill((failed ? Color.red : Color.green).opacity(0.12))
+                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(failed ? .red : .green)
+                        .symbolEffect(.bounce, value: title)
                 }
-            }
-            Spacer(minLength: 10)
-            VStack(spacing: 8) {
+                .frame(width: 54, height: 54)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(failed ? "需要处理" : "检测完成")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(failed ? .red : .green)
+                        if let count = viewState.lastReport?.details.count {
+                            Text("\(count) 条明细")
+                                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(.white.opacity(0.055), in: Capsule())
+                        }
+                    }
+                    Text(title)
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                    Text(viewState.toolSummary.isEmpty ? (failed ? "本次检测没有完成，请稍后重试。" : "本机检测完成，没有自动修改任何内容。") : viewState.toolSummary)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 10)
                 if !failed,
                    title == MacCareTool.junkScan.rawValue,
                    let plan = viewState.lastReport?.cleanupPlan {
@@ -653,12 +656,44 @@ struct MainAssistantView: View {
                 Button("返回总览") { resetManagerScreen() }
                     .buttonStyle(MainGlassActionButtonStyle(tint: themeAccent, prominent: false, height: 30, cornerRadius: 10))
             }
+
+            Divider().opacity(0.24)
+
+            if let details = viewState.lastReport?.details, !details.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(details.enumerated()), id: \.offset) { index, detail in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("\(index + 1)")
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(themeAccent)
+                                    .frame(width: 20, height: 20)
+                                    .background(themeAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                                Text(detail)
+                                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.primary.opacity(0.82))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        }
+                    }
+                }
+                .frame(minHeight: 94, maxHeight: 150)
+            } else {
+                Label(failed ? "没有可显示的明细" : "操作结果已完整显示", systemImage: failed ? "exclamationmark.circle" : "checkmark.circle")
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .center)
+            }
         }
     }
 
     private func dashboardSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-        .frame(maxWidth: .infinity, minHeight: 176, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 220, alignment: .leading)
         .padding(18)
         .background(
             LinearGradient(

@@ -1,5 +1,16 @@
 # 更新日志 / Changelog
 
+## v0.5.2 — 2026-07-16
+
+- 电脑管家状态屏不再只显示一句结论：完整展示本次扫描返回的所有明细。
+- 启动项会直接显示发现总数与每一项名称；大文件、重复文件、发热进程、应用残留和优化结果同样逐条展示。
+- 结果较多时在状态屏内部滚动，并支持复制文字；无需切换到聊天记录。
+- 结果、授权、清理确认、停止和返回总览全部留在电脑管家界面完成。
+
+- Mac Care now shows every returned result row instead of only a summary.
+- Login items, large files, duplicates, hot processes, leftovers, and optimization details remain inside the dashboard with internal scrolling and selectable text.
+- Results, approvals, cleanup confirmation, stopping, and returning to live metrics no longer require the chat view.
+
 ## v0.5.1 — 2026-07-16
 
 - 电脑管家卡片改为整卡点击，新增悬停发光、按压缩放、高光反馈以及明确的开始、停止和完成状态。
