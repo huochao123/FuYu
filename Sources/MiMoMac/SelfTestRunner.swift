@@ -128,6 +128,32 @@ enum SelfTestRunner {
         check(preferences.voiceInputEnabled, "主界面语音识别总开关默认开启")
         check(MainWindowTheme.allCases.count == 3 && preferences.mainWindowTheme == .deepOcean, "三套主界面皮肤与深海默认主题")
         check(MacCareTool.allCases.count == 9, "电脑管家九项本机工具注册")
+        let sharedReport = MacCareReport(
+            tool: .hotProcesses,
+            headline: "发现 1 个持续高负载进程",
+            details: ["ExampleApp · CPU 88%"]
+        )
+        state.publishMacCareReport(sharedReport)
+        check(
+            state.latestMacCareReport?.tool == .hotProcesses
+                && state.macCareContextPrompt.contains("ExampleApp")
+                && state.macCareReportVersion == 1,
+            "电脑管家结果同步到助手共享上下文"
+        )
+        check(
+            LocalCommandRouter.command(for: "把音量调到 35%") == .volume(.set(35))
+                && LocalCommandRouter.command(for: "检查一下启动项") == .scan(.loginItems)
+                && LocalCommandRouter.command(for: "删除重复文件") == .scan(.duplicates)
+                && LocalCommandRouter.command(for: "你能做什么") == .capabilities,
+            "基础 Mac 指令优先路由到浮屿本机能力且重复文件不直接删除"
+        )
+        let unavailableManifest = LocalMacCapabilityManifest(brightnessAvailable: false).prompt
+        check(
+            unavailableManifest.contains("九项") == false
+                && unavailableManifest.contains("系统体检")
+                && unavailableManifest.contains("不能声称已调整"),
+            "动态能力清单如实描述浮屿身份边界"
+        )
         let thermalMonitor = ThermalProcessMonitor()
         check(thermalMonitor.summary == "正在建立基线", "发热进程后台监测初始状态")
         check(

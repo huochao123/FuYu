@@ -7,7 +7,9 @@ CONFIGURATION="${CONFIGURATION:-release}"
 ICONSET_DIR="$ROOT_DIR/work/AppIcon.iconset"
 
 DEVELOPER_DIR=/Library/Developer/CommandLineTools swift build --package-path "$ROOT_DIR" -c "$CONFIGURATION"
-rm -rf "$APP_DIR" "$ICONSET_DIR"
+for old_path in "$APP_DIR" "$ICONSET_DIR"; do
+    [[ ! -e "$old_path" ]] || /usr/bin/trash "$old_path"
+done
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 mkdir -p "$ICONSET_DIR"
 cp "$ROOT_DIR/.build/$CONFIGURATION/MiMoMac" "$APP_DIR/Contents/MacOS/FuYu"

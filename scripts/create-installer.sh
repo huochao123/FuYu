@@ -10,7 +10,9 @@ BACKUP_PATH="$OUTPUT_DIR/浮屿个人配置备份.zip"
 
 "$ROOT_DIR/scripts/package-app.sh"
 
-rm -rf "$DMG_STAGE" "$BACKUP_STAGE" "$DMG_PATH" "$BACKUP_PATH"
+for old_path in "$DMG_STAGE" "$BACKUP_STAGE" "$DMG_PATH" "$BACKUP_PATH"; do
+    [[ ! -e "$old_path" ]] || /usr/bin/trash "$old_path"
+done
 mkdir -p "$DMG_STAGE" "$BACKUP_STAGE/配置" "$OUTPUT_DIR"
 
 ditto "$OUTPUT_DIR/浮屿.app" "$DMG_STAGE/浮屿.app"

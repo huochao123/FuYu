@@ -77,6 +77,9 @@ final class AppState: ObservableObject {
     @Published var steps: [TaskStep] = []
     @Published var conversation: [ConversationItem] = []
     @Published var showHistory = false
+    @Published private(set) var latestMacCareReports: [MacCareTool: MacCareReport] = [:]
+    @Published private(set) var latestMacCareReport: MacCareReport?
+    @Published private(set) var macCareReportVersion = 0
 
     var onVoiceRequested: (() -> Void)?
     var onVoiceSubmitRequested: (() -> Void)?
@@ -200,6 +203,22 @@ final class AppState: ObservableObject {
             .init(title: "正在检查结果", detail: "确认操作是否完成", status: .pending)
         ]
         appendConversation(.action, "正在执行：\(title)")
+    }
+
+    func beginLocalExecution(title: String) {
+        showPermission = false
+        approvalIsListening = false
+        isExpanded = interactionSource == .voice
+        phase = .executing
+        audioLevel = 0
+        taskTitle = title
+        progress = 0.12
+        steps = [
+            .init(title: "调用浮屿本机能力", detail: "无需经过 Hermes", status: .active),
+            .init(title: "正在读取真实系统状态", detail: "只使用本机结果", status: .pending),
+            .init(title: "正在整理结果", detail: "同步到电脑管家与聊天", status: .pending)
+        ]
+        appendConversation(.action, "本机执行：\(title)")
     }
 
     func updateExecution(progress newProgress: Double, step index: Int) {
@@ -358,6 +377,24 @@ final class AppState: ObservableObject {
 
     func recordAssistantMessage(_ text: String) {
         appendConversation(.assistant, text)
+    }
+
+    func publishMacCareReport(_ report: MacCareReport) {
+        latestMacCareReports[report.tool] = report
+        latestMacCareReport = report
+        macCareReportVersion &+= 1
+    }
+
+    var macCareContextPrompt: String {
+        guard !latestMacCareReports.isEmpty else { return "尚无电脑管家检测结果。" }
+        return MacCareTool.allCases.compactMap { tool in
+            guard let report = latestMacCareReports[tool] else { return nil }
+            let details = report.details.prefix(8).joined(separator: "；")
+            let recommendations = report.recommendations.prefix(4).map {
+                "\($0.title)（收益：\($0.benefit)；风险：\($0.risk)）"
+            }.joined(separator: "；")
+            return "[\(tool.rawValue)] \(report.headline)\n详情：\(details.isEmpty ? "无" : details)\n可执行建议：\(recommendations.isEmpty ? "无" : recommendations)"
+        }.joined(separator: "\n")
     }
 
     private func appendConversation(_ kind: ConversationItem.Kind, _ text: String) {

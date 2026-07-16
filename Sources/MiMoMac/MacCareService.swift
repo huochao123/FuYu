@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import CleanerEngine
 
-enum MacCareTool: String, CaseIterable, Sendable {
+enum MacCareTool: String, CaseIterable, Sendable, Hashable {
     case systemCheck = "系统体检"
     case junkScan = "垃圾清理"
     case organize = "智能整理"

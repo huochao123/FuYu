@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor
@@ -14,6 +15,14 @@ final class AssistantRuntime {
         let originalRequest: String
     }
 
+    private struct PendingLocalAction {
+        let approvalID: UUID
+        let title: String
+        let recommendation: MacCareRecommendation
+        let report: MacCareReport
+        let shouldSpeak: Bool
+    }
+
     private let state: AppState
     private let voice: VoiceService
     private let preferences: AssistantPreferences
@@ -24,6 +33,7 @@ final class AssistantRuntime {
     private var pendingAction: PendingAction?
     private var activeAction: PendingAction?
     private var pendingClarification: PendingClarification?
+    private var pendingLocalAction: PendingLocalAction?
 
     init(
         state: AppState,
@@ -53,7 +63,12 @@ final class AssistantRuntime {
             self?.voice.stopListeningAndSubmit()
         }
         state.onApprovalGranted = { [weak self] approvalID in
-            self?.executeApprovedAction(approvalID: approvalID)
+            guard let self else { return }
+            if self.pendingLocalAction?.approvalID == approvalID {
+                self.executeApprovedLocalAction(approvalID: approvalID)
+            } else {
+                self.executeApprovedAction(approvalID: approvalID)
+            }
         }
     }
 
@@ -155,6 +170,13 @@ final class AssistantRuntime {
             return
         }
 
+        if let localCommand = LocalCommandRouter.command(for: cleaned) {
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
+            return
+        }
+
         let effectiveRequest: String
         if let clarification = pendingClarification {
             if cleaned == "取消" || cleaned == "算了" {
@@ -183,9 +205,12 @@ final class AssistantRuntime {
         requestTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                let capabilities = await LocalMacCapabilityManifest.current()
+                let localContext = capabilities.prompt + "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
                 let decision = try await self.modelClient.decide(
                     for: effectiveRequest,
-                    profile: self.preferences.profile
+                    profile: self.preferences.profile,
+                    localContext: localContext
                 )
                 try Task.checkCancellation()
                 switch decision {
@@ -361,10 +386,190 @@ final class AssistantRuntime {
         requestTask?.cancel()
         requestTask = nil
         pendingAction = nil
+        pendingLocalAction = nil
         activeAction = nil
         if !preservingClarification { pendingClarification = nil }
         hermes.cancel()
         voice.cancelAll()
+    }
+
+    private func handleLocalCommand(_ command: LocalMacCommand, shouldSpeak: Bool) {
+        requestTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                switch command {
+                case let .scan(tool):
+                    self.state.beginLocalExecution(title: tool.rawValue)
+                    self.state.updateExecution(progress: 0.48, step: 1)
+                    let report = try await Task.detached(priority: .userInitiated) {
+                        try await MacCareService.run(tool)
+                    }.value
+                    try Task.checkCancellation()
+                    self.state.updateExecution(progress: 0.94, step: 2)
+                    self.state.publishMacCareReport(report)
+                    self.state.recordActionStatus(report.displayText)
+                    try? await self.modelClient.recordActionResult(
+                        title: "电脑管家 · \(tool.rawValue)",
+                        result: report.displayText,
+                        succeeded: true,
+                        profile: self.preferences.profile
+                    )
+                    self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+                case let .volume(adjustment):
+                    self.state.beginLocalExecution(title: "音量控制")
+                    let result = try await LocalMacControlService.shared.adjustVolume(adjustment)
+                    self.state.updateExecution(progress: 1, step: 2)
+                    self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
+                case let .brightness(adjustment):
+                    self.state.beginLocalExecution(title: "屏幕亮度")
+                    let result = try await LocalMacControlService.shared.adjustBrightness(adjustment)
+                    self.state.updateExecution(progress: 1, step: 2)
+                    self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
+                case let .applyLatest(tool):
+                    guard let report = self.state.latestMacCareReports[tool] else {
+                        self.state.beginLocalExecution(title: tool.rawValue)
+                        let scanned = try await Task.detached(priority: .userInitiated) {
+                            try await MacCareService.run(tool)
+                        }.value
+                        self.state.publishMacCareReport(scanned)
+                        self.state.recordActionStatus(scanned.displayText)
+                        self.deliverReply(
+                            scanned.displayText + "\n\n请查看建议并确认后再执行；浮屿不会静默修改文件。",
+                            suggestedSpoken: "检测完成，请确认建议后再执行。",
+                            shouldSpeak: shouldSpeak
+                        )
+                        return
+                    }
+                    guard let recommendation = report.recommendations.first else {
+                        self.deliverReply(
+                            "\(tool.rawValue)的最新结果没有需要执行的项目。\n\(report.headline)",
+                            suggestedSpoken: "最新结果没有需要执行的项目。",
+                            shouldSpeak: shouldSpeak
+                        )
+                        return
+                    }
+                    self.prepareLocalRecommendation(recommendation, report: report, shouldSpeak: shouldSpeak)
+                case .capabilities:
+                    let capabilities = await LocalMacCapabilityManifest.current()
+                    let brightness = capabilities.brightnessAvailable ? "屏幕亮度" : "亮度能力检测（当前屏幕不支持直接控制）"
+                    let reply = """
+                    我是浮屿 FuYu，一款以这台 Mac 为核心的本机智能助手。
+
+                    我能直接在本机完成九项电脑管家检测、音量与静音控制、\(brightness)，并持续监测异常发热进程。电脑管家的检测结果会同步给我，所以你可以直接接着问“有什么问题”或“执行哪条建议”。
+
+                    只读检查和可逆设置优先由我自己完成，不经过 Hermes；跨应用的复杂任务才交给 Hermes。清理、移动、删除、发送或修改安全设置前，我会先说明收益和风险并等你确认。
+                    """
+                    self.deliverReply(reply, suggestedSpoken: "我是浮屿，这台 Mac 的本机智能助手。", shouldSpeak: shouldSpeak)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                self.state.recordActionStatus("浮屿本机执行失败：\(error.localizedDescription)", failed: true)
+                self.state.presentError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func prepareLocalRecommendation(
+        _ recommendation: MacCareRecommendation,
+        report: MacCareReport,
+        shouldSpeak: Bool
+    ) {
+        let modifiesFiles: Bool
+        switch recommendation.action {
+        case .cleanSafe, .organizeDownloads: modifiesFiles = true
+        default: modifiesFiles = false
+        }
+        if modifiesFiles {
+            let detail = "收益：\(recommendation.benefit)\n风险：\(recommendation.risk)"
+            let approvalID = state.presentApproval(title: recommendation.title, detail: detail)
+            pendingLocalAction = .init(
+                approvalID: approvalID,
+                title: recommendation.title,
+                recommendation: recommendation,
+                report: report,
+                shouldSpeak: shouldSpeak
+            )
+            if preferences.voiceActionApproval, shouldSpeak {
+                Task { @MainActor [weak self] in await self?.voice.startListeningForApproval() }
+            }
+        } else {
+            let approvalID = UUID()
+            pendingLocalAction = .init(
+                approvalID: approvalID,
+                title: recommendation.title,
+                recommendation: recommendation,
+                report: report,
+                shouldSpeak: shouldSpeak
+            )
+            executeApprovedLocalAction(approvalID: approvalID)
+        }
+    }
+
+    private func executeApprovedLocalAction(approvalID: UUID) {
+        guard let pending = pendingLocalAction, pending.approvalID == approvalID else {
+            state.presentError("本机操作的确认信息已失效，请重新检测。")
+            return
+        }
+        pendingLocalAction = nil
+        voice.cancelAll()
+        state.beginLocalExecution(title: pending.title)
+        requestTask?.cancel()
+        requestTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let report = try await self.executeLocalAction(pending.recommendation.action, sourceReport: pending.report)
+                try Task.checkCancellation()
+                self.state.publishMacCareReport(report)
+                self.state.recordActionStatus(report.displayText)
+                try? await self.modelClient.recordActionResult(
+                    title: pending.title,
+                    result: report.displayText,
+                    succeeded: true,
+                    profile: self.preferences.profile
+                )
+                self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: pending.shouldSpeak)
+            } catch is CancellationError {
+                return
+            } catch {
+                self.state.recordActionStatus("本机执行失败：\(error.localizedDescription)", failed: true)
+                self.state.presentError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func executeLocalAction(_ action: MacCareAction, sourceReport: MacCareReport) async throws -> MacCareReport {
+        switch action {
+        case .cleanSafe:
+            guard let plan = sourceReport.cleanupPlan else { throw LocalMacToolError.invalidSystemResponse }
+            let result = await MacCareService.cleanSafe(plan)
+            return MacCareReport(
+                tool: .junkScan,
+                headline: "已将 \(result.entries.count) 项、约 \(ByteCountFormatter.string(fromByteCount: result.bytesFreed, countStyle: .file)) 移到废纸篓",
+                details: ["可从废纸篓恢复", "安全校验跳过：\(result.skippedPaths.count) 项"]
+            )
+        case let .organizeDownloads(moves):
+            let result = await Task.detached { MacCareService.organizeDownloads(moves) }.value
+            return MacCareReport(
+                tool: .organize,
+                headline: "已整理 \(result.moved) 个文件，跳过 \(result.skipped) 个",
+                details: ["没有覆盖同名文件", "没有删除文件"] + result.failures.prefix(12).map { "失败：\($0)" }
+            )
+        case let .revealFiles(urls):
+            let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+            NSWorkspace.shared.activateFileViewerSelecting(existing)
+            return MacCareReport(tool: sourceReport.tool, headline: "已在 Finder 定位 \(existing.count) 个项目", details: ["浮屿没有删除任何文件"])
+        case .openLoginItems:
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!)
+            return MacCareReport(tool: .loginItems, headline: "已打开登录项设置", details: ["请按名称确认后再关闭不需要的项目"])
+        case .openActivityMonitor:
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+            return MacCareReport(tool: .hotProcesses, headline: "已打开活动监视器", details: ["结束进程前请先保存工作"])
+        case let .runTool(tool):
+            return try await MacCareService.run(tool)
+        }
     }
 
     private func executeApprovedAction(approvalID: UUID) {

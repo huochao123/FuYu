@@ -81,6 +81,16 @@ struct MainAssistantView: View {
                 state.resetToIdle(message: "语音识别已关闭")
             }
         }
+        .onChange(of: state.macCareReportVersion) { _, _ in
+            guard let report = state.latestMacCareReport else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+                viewState.lastReport = report
+                viewState.toolSummary = report.headline
+                viewState.completedTool = report.tool.rawValue
+                viewState.failedTool = nil
+                if viewState.activeTool == report.tool.rawValue { viewState.activeTool = nil }
+            }
+        }
     }
 
     private var background: some View {
@@ -1014,6 +1024,7 @@ struct MainAssistantView: View {
                     try await MacCareService.run(tool)
                 }.value
                 guard !Task.isCancelled else { return }
+                state.publishMacCareReport(report)
                 state.recordActionStatus(report.displayText)
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
                     viewState.toolSummary = report.headline
@@ -1196,6 +1207,7 @@ struct MainAssistantView: View {
             var details = ["成功移动：\(result.moved) 个", "因同名或位置变化跳过：\(result.skipped) 个"]
             details.append(contentsOf: result.failures.prefix(20).map { "失败：\($0)" })
             let report = MacCareReport(tool: .organize, headline: summary, details: details)
+            state.publishMacCareReport(report)
             state.recordActionStatus("电脑管家 · 智能整理\n\(report.displayText)")
             withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
                 viewState.toolSummary = summary
@@ -1229,6 +1241,7 @@ struct MainAssistantView: View {
                     "安全校验跳过：\(result.skippedPaths.count) 项"
                 ]
             )
+            state.publishMacCareReport(report)
             withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
                 viewState.toolSummary = summary
                 viewState.completedTool = MacCareTool.junkScan.rawValue

@@ -1,5 +1,21 @@
 # 更新日志 / Changelog
 
+## v0.6.0 — 2026-07-16
+
+- 浮屿拥有明确的本机助手身份和动态能力清单，能准确说明自己能做什么、哪些操作需要确认，以及何时才需要 Hermes。
+- 聊天与电脑管家共享结构化检测结果；用户可在检测后直接追问异常、收益、风险和下一步，不必重新查找聊天记录。
+- 系统体检、垃圾扫描、智能整理、大文件、重复文件、启动项、发热进程、应用残留和优化建议均可由 AI 直接调用本机工具。
+- 音量、静音等可逆系统设置优先本机直达；屏幕亮度按运行时真实能力检测，不支持时明确说明，不虚报执行成功。
+- 本机检测和控制不再转交 Hermes；跨应用复杂任务仍由 Hermes 负责规划和验证。
+- 发热监控继续低开销主动检查并只在持续异常时通知；清理、移动和其他有影响的操作仍必须明确确认。
+- 新增身份能力、共享结果、本机指令路由及危险操作不直删等自动化自检。
+
+- FuYu now has an explicit Mac-first identity and a runtime capability manifest.
+- Chat and Mac Care share structured results, enabling direct follow-up analysis and local actions.
+- Nine maintenance tools plus volume and mute control use a local-first execution path instead of Hermes.
+- Brightness support is detected honestly at runtime; unsupported displays never produce a false success claim.
+- Proactive monitoring remains read-only, while cleanup and file moves still require explicit approval.
+
 ## v0.5.3 — 2026-07-16
 
 - 九项电脑管家工具加入完整执行闭环：检测结果、预期收益、风险说明、确认执行、暂不处理与执行后验证。
