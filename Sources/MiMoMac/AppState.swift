@@ -404,16 +404,14 @@ final class AppState: ObservableObject {
         }.joined(separator: "\n")
     }
 
-    func conversationContextPrompt(for query: String) -> String {
+    func conversationContextPrompt(for query: String, includePersistent: Bool = true) -> String {
         guard !conversation.isEmpty else { return "尚无历史对话。" }
         let recentCount = 20
         let recentStart = max(0, conversation.count - recentCount)
         let recent = Array(conversation[recentStart...])
-        let relevant = memorySystem.relevantHistory(
-            for: query,
-            excluding: Set(recent.map(\.id)),
-            limit: 8
-        )
+        let relevant = includePersistent
+            ? memorySystem.relevantHistory(for: query, excluding: Set(recent.map(\.id)), limit: 8)
+            : []
 
         func render(_ items: [ConversationItem]) -> String {
             items.map { item in
@@ -434,11 +432,11 @@ final class AppState: ObservableObject {
         当前连续对话（按时间顺序，必须承接代词、追问和“继续/去吧/这个/为什么”等短句）：
         \(render(recent))
 
-        当前工作记忆（跨重启保留）：
-        \(memorySystem.focusPrompt)
+        当前工作记忆：
+        \(includePersistent ? memorySystem.focusPrompt : "跨启动工作记忆已关闭，本轮只使用即时对话。")
 
         与当前请求相关的较早记录（仅作为历史，不要误当成刚发生）：
-        \(relevantText)
+        \(includePersistent ? relevantText : "跨启动工作记忆已关闭，未调用会话归档。")
         """
     }
 

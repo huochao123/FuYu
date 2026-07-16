@@ -199,7 +199,9 @@ final class AssistantRuntime {
         } else {
             effectiveRequest = cleaned
         }
-        let requestForModel = state.contextualizedRequest(effectiveRequest)
+        let requestForModel = preferences.profile.persistentMemory
+            ? state.contextualizedRequest(effectiveRequest)
+            : effectiveRequest
 
         cancelCurrentWork(preservingClarification: true)
         state.beginThinking(userText: cleaned)
@@ -210,7 +212,10 @@ final class AssistantRuntime {
                 let capabilities = await LocalMacCapabilityManifest.current()
                 let localContext = capabilities.prompt
                     + "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
-                    + "\n\n对话记忆：\n" + self.state.conversationContextPrompt(for: effectiveRequest)
+                    + "\n\n对话记忆：\n" + self.state.conversationContextPrompt(
+                        for: effectiveRequest,
+                        includePersistent: self.preferences.profile.persistentMemory
+                    )
                 let decision = try await self.modelClient.decide(
                     for: requestForModel,
                     profile: self.preferences.profile,

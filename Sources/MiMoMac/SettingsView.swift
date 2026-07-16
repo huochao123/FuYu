@@ -80,7 +80,7 @@ struct SettingsView: View {
         )
         .buttonStyle(SettingsGlassButtonStyle())
         .preferredColorScheme(.dark)
-        .alert("清除所有对话记忆？", isPresented: $viewState.showClearConfirmation) {
+        .alert("清除对话与任务记忆？", isPresented: $viewState.showClearConfirmation) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
                 Task {
@@ -93,7 +93,7 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("当前会话和已保存到本机的长期记忆都会被删除。")
+            Text("将删除即时上下文、当前任务和本机会话归档；永久习惯不会被删除，可在习惯区域单独管理。")
         }
         .sheet(item: $viewState.tavernPreview) { preview in
             TavernImportPreviewSheet(
@@ -737,6 +737,7 @@ struct SettingsView: View {
 
     private var memoryPage: some View {
         VStack(spacing: 14) {
+            memoryLayerOverview
             settingsCard {
                 Toggle(isOn: $preferences.contextEnabled) {
                     settingLabel("启用连续对话", detail: "让“去吧、继续、为什么”自然承接上一任务")
@@ -797,7 +798,7 @@ struct SettingsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("清除记忆").font(.system(size: 12, weight: .semibold, design: .rounded))
-                        Text("删除当前上下文和本机长期记忆").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text("删除对话、当前任务与会话归档；保留永久习惯").font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("清除…", role: .destructive) { viewState.showClearConfirmation = true }
@@ -806,6 +807,93 @@ struct SettingsView: View {
             Label("采用工作记忆、任务状态、长期习惯和会话检索四层结构；全部只保存在本机，不保存录音。", systemImage: "lock.shield")
                 .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
         }
+    }
+
+    private var memoryLayerOverview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("浮屿分层记忆")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                    Text("不再只靠固定聊天轮数；每层负责不同类型的信息")
+                        .font(.system(size: 9.5, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label("仅本机", systemImage: "lock.fill")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.mint)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.mint.opacity(0.1), in: Capsule())
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                memoryLayerCard(
+                    icon: "text.bubble.fill",
+                    title: "即时对话",
+                    detail: "承接代词、追问和短指令",
+                    status: preferences.contextEnabled ? "\(Int(preferences.contextTurns)) 轮原文" : "已关闭",
+                    color: .cyan
+                )
+                memoryLayerCard(
+                    icon: "scope",
+                    title: "当前任务",
+                    detail: "保存目标、状态和上一轮说明",
+                    status: preferences.persistentMemory ? "跨重启" : "仅本次",
+                    color: .blue
+                )
+                memoryLayerCard(
+                    icon: "archivebox.fill",
+                    title: "会话归档",
+                    detail: "较早真实原话按相关性检索",
+                    status: preferences.persistentMemory ? "自动归档" : "暂停调用",
+                    color: .indigo
+                )
+                memoryLayerCard(
+                    icon: "person.crop.circle.badge.checkmark",
+                    title: "永久习惯",
+                    detail: "只保存你明确要求记住的偏好",
+                    status: preferences.permanentHabitsEnabled ? "\(preferences.permanentHabits.count) 条" : "已关闭",
+                    color: .mint
+                )
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(colors: [.cyan.opacity(0.075), .blue.opacity(0.045), .black.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.1), lineWidth: 0.8))
+    }
+
+    private func memoryLayerCard(
+        icon: String,
+        title: String,
+        detail: String,
+        status: String,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 30, height: 30)
+                .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(title).font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    Text(status)
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .foregroundStyle(color)
+                }
+                Text(detail)
+                    .font(.system(size: 8.5, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func addPermanentHabit() {
