@@ -169,6 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         } else if CommandLine.arguments.contains("--voice-smoke-test") {
             runVoiceSmokeTest()
+        } else if CommandLine.arguments.contains("--voice-cycle-smoke-test") {
+            runVoiceCycleSmokeTest()
         } else if CommandLine.arguments.contains("--model-smoke-test") {
             Task { @MainActor [weak self] in
                 guard let self else { exit(1) }
@@ -357,6 +359,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.shortcutMonitor?.stop()
             print("浮屿语音冒烟测试通过：点击入口、权限、麦克风启动与停止均正常")
             exit(0)
+        }
+    }
+
+    private func runVoiceCycleSmokeTest() {
+        Task { @MainActor [weak self] in
+            guard let self, let voiceService = self.voiceService else { exit(1) }
+            let resultURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-voice-cycle-smoke.txt")
+            do {
+                let result = try await voiceService.testConsecutiveListeningCycles()
+                try? "PASS\n\(result)".write(to: resultURL, atomically: true, encoding: .utf8)
+                print("浮屿连续语音自检通过：\(result)")
+                self.shortcutMonitor?.stop()
+                exit(0)
+            } catch {
+                try? "FAIL\n\(error.localizedDescription)".write(to: resultURL, atomically: true, encoding: .utf8)
+                fputs("浮屿连续语音自检失败：\(error.localizedDescription)\n", stderr)
+                self.shortcutMonitor?.stop()
+                exit(1)
+            }
         }
     }
 

@@ -18,6 +18,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var speechTask: Task<Void, Never>?
     private var continuousTask: Task<Void, Never>?
     private var outputVolumeRestoreTask: Task<Void, Never>?
+    private var audioStartupWatchdogTask: Task<Void, Never>?
+    private var outputVolumeBeforeListening: LocalMacControlService.VolumeState?
 
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -37,6 +39,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var bargeInStartTask: Task<Void, Never>?
     private var currentSpokenText = ""
     private var recognitionGeneration = 0
+    private var audioBufferCount = 0
+    private var audioStartupRecoveryAttempts = 0
     private var continuousGeneration = 0
     private var isContinuousFollowUp = false
     private var activeSystemUtteranceID: ObjectIdentifier?
@@ -71,6 +75,83 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return "MiMo ASR 已识别：\(transcript.prefix(40))"
     }
 
+    func testConsecutiveListeningCycles() async throws -> String {
+        cancelAll()
+        try await beginRawAudioCaptureForTest()
+        guard await waitForAudioBuffers() else {
+            cancelAll()
+            throw VoicePipelineTestError.noAudioBuffers(cycle: 1)
+        }
+        let firstCount = audioBufferCount
+        stopRecognitionResources()
+        cleanupRecording()
+        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+
+        try? await Task.sleep(for: .milliseconds(750))
+        try await beginRawAudioCaptureForTest()
+        guard await waitForAudioBuffers() else {
+            cancelAll()
+            throw VoicePipelineTestError.noAudioBuffers(cycle: 2)
+        }
+        let secondCount = audioBufferCount
+        stopRecognitionResources()
+        cleanupRecording()
+        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+        return "连续两轮均收到真实麦克风音频缓冲（第一轮 \(firstCount)，第二轮 \(secondCount)）"
+    }
+
+    private func beginRawAudioCaptureForTest() async throws {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            throw VoicePipelineTestError.microphonePermissionMissing
+        }
+        stopRecognitionResources()
+        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+        outputVolumeRestoreTask = nil
+        cleanupRecording()
+        recognitionGeneration &+= 1
+        let generation = recognitionGeneration
+        audioBufferCount = 0
+
+        outputVolumeBeforeListening = try? await LocalMacControlService.shared.volumeState()
+        let input = audioEngine.inputNode
+        if !input.isVoiceProcessingEnabled {
+            try? input.setVoiceProcessingEnabled(true)
+        }
+        if #available(macOS 14.0, *) {
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false,
+                duckingLevel: .min
+            )
+        }
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw VoicePipelineTestError.invalidInputFormat
+        }
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        recognitionRequest = request
+        Self.installAudioTap(
+            on: input,
+            format: format,
+            request: request,
+            recordingFile: nil,
+            service: self,
+            generation: generation
+        )
+        tapInstalled = true
+        audioEngine.prepare()
+        try audioEngine.start()
+        isListening = true
+    }
+
+    private func waitForAudioBuffers() async -> Bool {
+        for _ in 0..<40 {
+            if audioBufferCount >= 3 { return true }
+            if !isListening { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return audioBufferCount >= 3
+    }
+
     func startListening() async {
         guard !isListening else { return }
         isContinuousFollowUp = false
@@ -83,6 +164,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             return
         }
         isContinuousFollowUp = continuousFollowUp
+        audioStartupRecoveryAttempts = 0
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
         await beginListening()
@@ -90,6 +172,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func startListeningForApproval() async {
         isContinuousFollowUp = false
+        audioStartupRecoveryAttempts = 0
         recognitionRecoveryAttempts = 0
         if isListening {
             stopRecognitionResources()
@@ -102,6 +185,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     func startListeningForTaskInterruption() async {
         guard preferences.voiceInterruption else { return }
         isContinuousFollowUp = false
+        audioStartupRecoveryAttempts = 0
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
         listeningForTaskInterruption = true
@@ -132,8 +216,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
 
         stopRecognitionResources()
+        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+        outputVolumeRestoreTask = nil
         cleanupRecording()
         latestTranscript = ""
+        audioBufferCount = 0
         recognitionGeneration &+= 1
         let generation = recognitionGeneration
         logger.notice("Starting recognition generation \(generation)")
@@ -161,7 +248,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             generation: generation
         )
 
-        let originalOutputState = try? await LocalMacControlService.shared.volumeState()
+        outputVolumeBeforeListening = try? await LocalMacControlService.shared.volumeState()
         let input = audioEngine.inputNode
         // Keep Apple's voice-processing path enabled during normal listening
         // as well as barge-in. Its acoustic echo cancellation substantially
@@ -190,7 +277,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             format: format,
             request: request,
             recordingFile: recordingFile,
-            service: self
+            service: self,
+            generation: generation
         )
         tapInstalled = true
 
@@ -198,7 +286,12 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
-            protectOutputVolume(originalOutputState, generation: generation)
+            scheduleAudioStartupWatchdog(
+                generation: generation,
+                preservingSpeechForBargeIn: preservingSpeechForBargeIn,
+                spokenText: spokenText,
+                monitoringTaskInterruption: monitoringTaskInterruption
+            )
             if preservingSpeechForBargeIn {
                 listeningForBargeIn = true
                 bargeInSpokenText = spokenText
@@ -219,10 +312,13 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         logger.notice("Submitting recognition generation \(self.recognitionGeneration)")
         silenceTask?.cancel()
         silenceTask = nil
+        audioStartupWatchdogTask?.cancel()
+        audioStartupWatchdogTask = nil
         audioEngine.stop()
         removeTapIfNeeded()
         recognitionRequest?.endAudio()
         isListening = false
+        endVoiceProcessingAndRestoreVolume()
 
         let captured = latestTranscript
         let capturedRecordingURL = recordingURL
@@ -357,8 +453,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         continuousTask?.cancel()
         continuousTask = nil
         continuousGeneration &+= 1
-        outputVolumeRestoreTask?.cancel()
-        outputVolumeRestoreTask = nil
+        audioStartupWatchdogTask?.cancel()
+        audioStartupWatchdogTask = nil
         recoveryTask?.cancel()
         recoveryTask = nil
         bargeInStartTask?.cancel()
@@ -580,34 +676,37 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return speechAllowed && microphoneAllowed
     }
 
-    private func protectOutputVolume(
-        _ original: LocalMacControlService.VolumeState?,
-        generation: Int
-    ) {
+    private func scheduleOutputVolumeRestore() {
+        guard let original = outputVolumeBeforeListening else { return }
+        outputVolumeBeforeListening = nil
         outputVolumeRestoreTask?.cancel()
-        guard let original, !original.muted else { return }
-        outputVolumeRestoreTask = Task { @MainActor [weak self] in
-            // Voice Processing can asynchronously halve the output slider on
-            // some Macs. Only correct changes during microphone startup, so a
-            // later manual volume adjustment is never overridden.
-            for delay in [0, 80, 180, 360] {
+        guard !original.muted else { return }
+        outputVolumeRestoreTask = Task { @MainActor in
+            // Let macOS duck media while listening, then restore the exact
+            // pre-listening level after Fn is released / capture ends.
+            for delay in [0, 80, 180] {
                 if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
-                guard let self,
-                      !Task.isCancelled,
-                      self.isListening,
-                      self.recognitionGeneration == generation else { return }
+                guard !Task.isCancelled else { return }
                 guard let observed = try? await LocalMacControlService.shared.volumeState(),
-                      Self.shouldRestoreOutputVolume(
+                      Self.shouldRestoreOutputVolumeAfterListening(
                         original: original.level,
                         observed: observed.level
                       ) else { continue }
                 _ = try? await LocalMacControlService.shared.adjustVolume(.set(original.level))
+                return
             }
         }
     }
 
-    static func shouldRestoreOutputVolume(original: Int, observed: Int) -> Bool {
+    static func shouldRestoreOutputVolumeAfterListening(original: Int, observed: Int) -> Bool {
         original > 0 && observed >= 0 && observed <= original - 2
+    }
+
+    private func endVoiceProcessingAndRestoreVolume() {
+        if audioEngine.inputNode.isVoiceProcessingEnabled {
+            try? audioEngine.inputNode.setVoiceProcessingEnabled(false)
+        }
+        scheduleOutputVolumeRestore()
     }
 
     /// Speech invokes its authorization callback on an arbitrary queue. Keeping
@@ -655,7 +754,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         format: AVAudioFormat,
         request: SFSpeechAudioBufferRecognitionRequest,
         recordingFile: AVAudioFile?,
-        service: VoiceService
+        service: VoiceService,
+        generation: Int
     ) {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request, recordingFile, weak service] buffer, _ in
             request?.append(buffer)
@@ -671,15 +771,61 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             let rms = sqrt(sum / Float(frameCount))
             let normalized = min(max((Double(rms) - 0.008) * 12.5, 0), 1)
             Task { @MainActor [weak service] in
-                guard let service else { return }
+                guard let service,
+                      service.recognitionGeneration == generation else { return }
+                service.audioBufferCount += 1
                 service.state.audioLevel = service.state.audioLevel * 0.58 + normalized * 0.42
             }
         }
     }
 
+    private func scheduleAudioStartupWatchdog(
+        generation: Int,
+        preservingSpeechForBargeIn: Bool,
+        spokenText: String,
+        monitoringTaskInterruption: Bool
+    ) {
+        audioStartupWatchdogTask?.cancel()
+        audioStartupWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard let self,
+                  !Task.isCancelled,
+                  self.isListening,
+                  self.recognitionGeneration == generation else { return }
+            if self.audioBufferCount == 0, self.audioStartupRecoveryAttempts >= 1 {
+                self.audioStartupWatchdogTask = nil
+                self.stopRecognitionResources()
+                self.cleanupRecording()
+                self.state.presentError("麦克风没有收到音频，已停止本轮识别。请再次按 Fn 重试。")
+                return
+            }
+            guard Self.shouldRestartAudioCapture(
+                bufferCount: self.audioBufferCount,
+                recoveryAttempts: self.audioStartupRecoveryAttempts
+            ) else { return }
+
+            self.audioStartupRecoveryAttempts += 1
+            self.logger.error("Recognition generation \(generation) received no audio buffers; rebuilding capture")
+            self.audioStartupWatchdogTask = nil
+            self.stopRecognitionResources()
+            self.cleanupRecording()
+            try? await Task.sleep(for: .milliseconds(220))
+            guard !Task.isCancelled else { return }
+            await self.beginListening(
+                preservingSpeechForBargeIn: preservingSpeechForBargeIn,
+                spokenText: spokenText,
+                monitoringTaskInterruption: monitoringTaskInterruption
+            )
+        }
+    }
+
+    static func shouldRestartAudioCapture(bufferCount: Int, recoveryAttempts: Int) -> Bool {
+        bufferCount == 0 && recoveryAttempts < 1
+    }
+
     private func stopRecognitionResources() {
-        outputVolumeRestoreTask?.cancel()
-        outputVolumeRestoreTask = nil
+        audioStartupWatchdogTask?.cancel()
+        audioStartupWatchdogTask = nil
         silenceTask?.cancel()
         silenceTask = nil
         if audioEngine.isRunning {
@@ -695,9 +841,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         isListening = false
         state.audioLevel = 0
         audioEngine.reset()
-        if audioEngine.inputNode.isVoiceProcessingEnabled {
-            try? audioEngine.inputNode.setVoiceProcessingEnabled(false)
-        }
+        endVoiceProcessingAndRestoreVolume()
     }
 
     private func handleRecognitionInterruption(_ description: String) {
@@ -861,7 +1005,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         let generation = continuousGeneration
         logger.notice("Keeping overlay open for continuous conversation")
         continuousTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(550))
+            // Give CoreAudio time to fully tear down the barge-in capture
+            // before rebuilding the normal follow-up microphone session.
+            try? await Task.sleep(for: .milliseconds(750))
             guard let self,
                   !Task.isCancelled,
                   self.continuousGeneration == generation else { return }
@@ -915,6 +1061,23 @@ private enum VoiceOutputError: LocalizedError {
         case .invalidResponse: "语音服务没有返回可播放的声音"
         case let .requestFailed(code): "语音服务请求失败（\(code)）"
         case .playbackFailed: "无法播放生成的声音"
+        }
+    }
+}
+
+private enum VoicePipelineTestError: LocalizedError {
+    case noAudioBuffers(cycle: Int)
+    case microphonePermissionMissing
+    case invalidInputFormat
+
+    var errorDescription: String? {
+        switch self {
+        case let .noAudioBuffers(cycle):
+            "第 \(cycle) 轮麦克风没有返回音频缓冲。"
+        case .microphonePermissionMissing:
+            "麦克风权限尚未允许。"
+        case .invalidInputFormat:
+            "麦克风输入格式无效。"
         }
     }
 }

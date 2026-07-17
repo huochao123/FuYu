@@ -30,9 +30,9 @@
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>0.7.1</string>
+    <string>0.7.2</string>
     <key>CFBundleVersion</key>
-    <string>15</string>
+    <string>16</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSUIElement</key>

@@ -287,10 +287,16 @@ enum SelfTestRunner {
             "连续对话第二轮增加停顿余量避免话没说完就提交"
         )
         check(
-            VoiceService.shouldRestoreOutputVolume(original: 22, observed: 11)
-                && !VoiceService.shouldRestoreOutputVolume(original: 22, observed: 22)
-                && !VoiceService.shouldRestoreOutputVolume(original: 22, observed: 28),
-            "语音通道只纠正启动瞬间被系统意外压低的音量"
+            VoiceService.shouldRestoreOutputVolumeAfterListening(original: 22, observed: 11)
+                && !VoiceService.shouldRestoreOutputVolumeAfterListening(original: 22, observed: 22)
+                && !VoiceService.shouldRestoreOutputVolumeAfterListening(original: 22, observed: 28),
+            "松开 Fn 后恢复收音前音量且不压低用户主动调高的音量"
+        )
+        check(
+            VoiceService.shouldRestartAudioCapture(bufferCount: 0, recoveryAttempts: 0)
+                && !VoiceService.shouldRestartAudioCapture(bufferCount: 1, recoveryAttempts: 0)
+                && !VoiceService.shouldRestartAudioCapture(bufferCount: 0, recoveryAttempts: 1),
+            "第二轮麦克风没有音频缓冲时只自动重建一次"
         )
         check(
             VoiceService.userInterruptionText(transcript: "这是助手正在说的话", spokenText: "这是助手正在说的话") == nil
