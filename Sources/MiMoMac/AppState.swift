@@ -249,11 +249,17 @@ final class AppState: ObservableObject {
         appendConversation(.assistant, text)
     }
 
-    func finishSpeaking() {
+    func finishSpeaking(keepExpanded: Bool = false) {
         guard phase == .speaking else { return }
         phase = .idle
         audioLevel = 0
         activitySource = "本机"
+        if keepExpanded {
+            // Continuous conversation owns the next transition. Never let an
+            // old delayed collapse race the next microphone session.
+            isExpanded = true
+            return
+        }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(700))
             guard let self, self.phase == .idle, !self.showPermission else { return }

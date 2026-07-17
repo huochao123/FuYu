@@ -1,4 +1,5 @@
 import AVFoundation
+import OSLog
 import Speech
 
 @MainActor
@@ -12,9 +13,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private let audioEngine = AVAudioEngine()
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private let synthesizer = AVSpeechSynthesizer()
+    private let logger = Logger(subsystem: "ai.fuyu.desktop", category: "voice")
     private var audioPlayer: AVAudioPlayer?
     private var speechTask: Task<Void, Never>?
     private var continuousTask: Task<Void, Never>?
+    private var outputVolumeRestoreTask: Task<Void, Never>?
 
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -33,6 +36,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var bargeInSpokenText = ""
     private var bargeInStartTask: Task<Void, Never>?
     private var currentSpokenText = ""
+    private var recognitionGeneration = 0
+    private var continuousGeneration = 0
+    private var isContinuousFollowUp = false
+    private var activeSystemUtteranceID: ObjectIdentifier?
+    private var activeAudioPlayerID: ObjectIdentifier?
 
     init(state: AppState, preferences: AssistantPreferences) {
         self.state = state
@@ -64,16 +72,24 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func startListening() async {
+        guard !isListening else { return }
+        isContinuousFollowUp = false
+        await startListening(continuousFollowUp: false)
+    }
+
+    private func startListening(continuousFollowUp: Bool) async {
         guard preferences.voiceInputEnabled else {
             state.resetToIdle(message: "语音识别已关闭")
             return
         }
+        isContinuousFollowUp = continuousFollowUp
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
         await beginListening()
     }
 
     func startListeningForApproval() async {
+        isContinuousFollowUp = false
         recognitionRecoveryAttempts = 0
         if isListening {
             stopRecognitionResources()
@@ -85,6 +101,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func startListeningForTaskInterruption() async {
         guard preferences.voiceInterruption else { return }
+        isContinuousFollowUp = false
         recognitionRecoveryAttempts = 0
         listeningForApproval = false
         listeningForTaskInterruption = true
@@ -117,6 +134,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         stopRecognitionResources()
         cleanupRecording()
         latestTranscript = ""
+        recognitionGeneration &+= 1
+        let generation = recognitionGeneration
+        logger.notice("Starting recognition generation \(generation)")
 
         guard let speechRecognizer, speechRecognizer.isAvailable else {
             state.presentError("语音识别暂时不可用，请稍后再试。")
@@ -137,9 +157,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recognitionTask = Self.makeRecognitionTask(
             recognizer: speechRecognizer,
             request: request,
-            service: self
+            service: self,
+            generation: generation
         )
 
+        let originalOutputState = try? await LocalMacControlService.shared.volumeState()
         let input = audioEngine.inputNode
         // Keep Apple's voice-processing path enabled during normal listening
         // as well as barge-in. Its acoustic echo cancellation substantially
@@ -176,6 +198,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
+            protectOutputVolume(originalOutputState, generation: generation)
             if preservingSpeechForBargeIn {
                 listeningForBargeIn = true
                 bargeInSpokenText = spokenText
@@ -193,6 +216,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func stopListeningAndSubmit() {
         guard isListening else { return }
+        logger.notice("Submitting recognition generation \(self.recognitionGeneration)")
         silenceTask?.cancel()
         silenceTask = nil
         audioEngine.stop()
@@ -332,6 +356,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         silenceTask = nil
         continuousTask?.cancel()
         continuousTask = nil
+        continuousGeneration &+= 1
+        outputVolumeRestoreTask?.cancel()
+        outputVolumeRestoreTask = nil
         recoveryTask?.cancel()
         recoveryTask = nil
         bargeInStartTask?.cancel()
@@ -366,6 +393,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         if synthesizer.isSpeaking || synthesizer.isPaused {
             synthesizer.stopSpeaking(at: .immediate)
         }
+        activeSystemUtteranceID = nil
+        activeAudioPlayerID = nil
     }
 
     private func speakWithSystem(_ text: String) {
@@ -378,6 +407,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
         utterance.rate = Float(preferences.speechRate)
         utterance.pitchMultiplier = 1.02
+        activeSystemUtteranceID = ObjectIdentifier(utterance)
         synthesizer.speak(utterance)
         scheduleBargeInMonitoring(for: text)
     }
@@ -522,6 +552,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         player.prepareToPlay()
         guard player.play() else { throw VoiceOutputError.playbackFailed }
         audioPlayer = player
+        activeAudioPlayerID = ObjectIdentifier(player)
         scheduleBargeInMonitoring(for: currentSpokenText)
     }
 
@@ -549,6 +580,36 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return speechAllowed && microphoneAllowed
     }
 
+    private func protectOutputVolume(
+        _ original: LocalMacControlService.VolumeState?,
+        generation: Int
+    ) {
+        outputVolumeRestoreTask?.cancel()
+        guard let original, !original.muted else { return }
+        outputVolumeRestoreTask = Task { @MainActor [weak self] in
+            // Voice Processing can asynchronously halve the output slider on
+            // some Macs. Only correct changes during microphone startup, so a
+            // later manual volume adjustment is never overridden.
+            for delay in [0, 80, 180, 360] {
+                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                guard let self,
+                      !Task.isCancelled,
+                      self.isListening,
+                      self.recognitionGeneration == generation else { return }
+                guard let observed = try? await LocalMacControlService.shared.volumeState(),
+                      Self.shouldRestoreOutputVolume(
+                        original: original.level,
+                        observed: observed.level
+                      ) else { continue }
+                _ = try? await LocalMacControlService.shared.adjustVolume(.set(original.level))
+            }
+        }
+    }
+
+    static func shouldRestoreOutputVolume(original: Int, observed: Int) -> Bool {
+        original > 0 && observed >= 0 && observed <= original - 2
+    }
+
     /// Speech invokes its authorization callback on an arbitrary queue. Keeping
     /// this bridge nonisolated prevents Swift 6 from treating that callback as
     /// main-actor code and trapping before the continuation can resume.
@@ -563,13 +624,18 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private nonisolated static func makeRecognitionTask(
         recognizer: SFSpeechRecognizer,
         request: SFSpeechAudioBufferRecognitionRequest,
-        service: VoiceService
+        service: VoiceService,
+        generation: Int
     ) -> SFSpeechRecognitionTask {
         recognizer.recognitionTask(with: request) { [weak service] result, error in
             let transcript = result?.bestTranscription.formattedString
             let errorDescription = error?.localizedDescription
             Task { @MainActor in
                 guard let service else { return }
+                guard generation == service.recognitionGeneration else {
+                    service.logger.debug("Ignored stale recognition generation \(generation); active is \(service.recognitionGeneration)")
+                    return
+                }
                 if let transcript {
                     if service.handleBargeInTranscript(transcript) { return }
                     service.latestTranscript = transcript
@@ -612,6 +678,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     private func stopRecognitionResources() {
+        outputVolumeRestoreTask?.cancel()
+        outputVolumeRestoreTask = nil
         silenceTask?.cancel()
         silenceTask = nil
         if audioEngine.isRunning {
@@ -622,6 +690,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
+        recognitionGeneration &+= 1
         recordingFile = nil
         isListening = false
         state.audioLevel = 0
@@ -720,14 +789,19 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
         let milliseconds = Self.automaticSubmissionDelayMilliseconds(
             for: value,
-            baseSeconds: preferences.endPauseSeconds
+            baseSeconds: Self.automaticSubmissionBaseSeconds(
+                configured: preferences.endPauseSeconds,
+                continuousFollowUp: isContinuousFollowUp
+            )
         )
 
+        let generation = recognitionGeneration
         silenceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(milliseconds))
             guard let self,
                   !Task.isCancelled,
                   self.isListening,
+                  self.recognitionGeneration == generation,
                   self.latestTranscript == transcript else { return }
             self.stopListeningAndSubmit()
         }
@@ -749,14 +823,20 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return value.count <= 8 ? base + 350 : base
     }
 
+    static func automaticSubmissionBaseSeconds(configured: Double, continuousFollowUp: Bool) -> Double {
+        continuousFollowUp ? configured + 1.2 : configured
+    }
+
     private func scheduleInitialSilenceTimeout() {
         silenceTask?.cancel()
         let timeout = preferences.silenceTimeout
+        let generation = recognitionGeneration
         silenceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
             guard let self,
                   !Task.isCancelled,
                   self.isListening,
+                  self.recognitionGeneration == generation,
                   self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             self.stopRecognitionResources()
             self.cleanupRecording()
@@ -777,14 +857,20 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private func scheduleContinuousListening() {
         continuousTask?.cancel()
         guard preferences.continuousConversation else { return }
+        continuousGeneration &+= 1
+        let generation = continuousGeneration
+        logger.notice("Keeping overlay open for continuous conversation")
         continuousTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(550))
-            guard let self, !Task.isCancelled else { return }
-            await self.startListening()
+            guard let self,
+                  !Task.isCancelled,
+                  self.continuousGeneration == generation else { return }
+            await self.startListening(continuousFollowUp: true)
         }
     }
 
     private func finishSpeakingNormally() {
+        guard state.phase == .speaking else { return }
         bargeInStartTask?.cancel()
         bargeInStartTask = nil
         if listeningForBargeIn {
@@ -793,7 +879,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             stopRecognitionResources()
             cleanupRecording()
         }
-        state.finishSpeaking()
+        state.finishSpeaking(keepExpanded: preferences.continuousConversation)
         scheduleContinuousListening()
     }
 
@@ -801,15 +887,21 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
+        let utteranceID = ObjectIdentifier(utterance)
         Task { @MainActor [weak self] in
-            self?.finishSpeakingNormally()
+            guard let self, self.activeSystemUtteranceID == utteranceID else { return }
+            self.activeSystemUtteranceID = nil
+            self.finishSpeakingNormally()
         }
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let playerID = ObjectIdentifier(player)
         Task { @MainActor [weak self] in
-            self?.audioPlayer = nil
-            self?.finishSpeakingNormally()
+            guard let self, self.activeAudioPlayerID == playerID else { return }
+            self.activeAudioPlayerID = nil
+            self.audioPlayer = nil
+            self.finishSpeakingNormally()
         }
     }
 }

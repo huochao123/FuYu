@@ -67,6 +67,12 @@ enum SelfTestRunner {
         state.beginVoiceInteraction()
         state.beginThinking(userText: "语音输入")
         check(state.interactionSource == .voice && state.isExpanded, "语音输入继续使用悬浮窗")
+        state.beginSpeaking("第一轮语音回答")
+        state.finishSpeaking(keepExpanded: true)
+        check(
+            state.phase == .idle && state.isExpanded,
+            "连续对话等待下一轮时不会被旧收起任务关闭"
+        )
         state.presentNotification("发热监控提醒", duration: .seconds(30))
         check(
             state.interactionSource == .notification && state.overlayMode == .response && state.isExpanded,
@@ -274,6 +280,17 @@ enum SelfTestRunner {
                 && VoiceService.automaticSubmissionDelayMilliseconds(for: "好，就这样去执行吧", baseSeconds: 2.3) == 320
                 && VoiceService.automaticSubmissionDelayMilliseconds(for: "可以了", baseSeconds: 2.3) == 320,
             "停顿提交会给短句和未完句留出时间"
+        )
+        check(
+            VoiceService.automaticSubmissionBaseSeconds(configured: 2.8, continuousFollowUp: false) == 2.8
+                && VoiceService.automaticSubmissionBaseSeconds(configured: 2.8, continuousFollowUp: true) == 4.0,
+            "连续对话第二轮增加停顿余量避免话没说完就提交"
+        )
+        check(
+            VoiceService.shouldRestoreOutputVolume(original: 22, observed: 11)
+                && !VoiceService.shouldRestoreOutputVolume(original: 22, observed: 22)
+                && !VoiceService.shouldRestoreOutputVolume(original: 22, observed: 28),
+            "语音通道只纠正启动瞬间被系统意外压低的音量"
         )
         check(
             VoiceService.userInterruptionText(transcript: "这是助手正在说的话", spokenText: "这是助手正在说的话") == nil

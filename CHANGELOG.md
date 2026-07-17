@@ -1,5 +1,18 @@
 # 更新日志 / Changelog
 
+## v0.7.1 — 2026-07-17
+
+- 修复长按 Fn / 地球键启动语音通道时，Apple Voice Processing 在部分 Mac 上把系统输出音量意外压低的问题；浮屿会在麦克风启动阶段检测并恢复原音量，不影响之后的手动调节。
+- 连续对话改为按识别代次隔离：旧一轮的识别回调、静音计时器和提交任务不能再关闭或提交新一轮。
+- 连续对话等待用户回复时保持悬浮窗展开，不再同时运行旧的延迟收起任务。
+- 连续对话第二轮及以后增加 1.2 秒停顿余量，短暂停顿不再被误判成“已经说完”；明确说“好了、执行吧”仍会立即提交。
+- 系统语音与云端音频播放使用独立播放标识，迟到的播放结束回调不会结束下一轮对话。
+- 新增语音代次与连续等待系统日志，后续可以准确判断是哪一轮启动、提交或忽略了过期回调。
+- 新增连续窗口保持与音量保护自动化回归。
+
+- Fixed Fn-triggered output volume ducking and stale callback races between consecutive voice turns.
+- Continuous conversation now isolates recognition generations and keeps the overlay open while awaiting the next reply.
+
 ## v0.7.0 — 2026-07-16
 
 - 重构浮屿的决策核心：回答、本机工具调用与 Hermes 专家委派成为三种明确协议，不再把普通 Mac 语句事后强制升级为 Hermes。
