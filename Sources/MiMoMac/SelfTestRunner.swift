@@ -26,6 +26,13 @@ enum SelfTestRunner {
         check(state.overlayMode == .orb, "初始状态是悬浮球")
         state.beginListening()
         check(state.overlayMode == .voice && state.phase == .listening, "录音状态切换")
+        check(state.recognitionStage == .waiting && state.transcript == "我在听…", "识别窗口等待声音")
+        state.updateTranscript("帮我创建一个会议")
+        check(state.recognitionStage == .live && state.transcript == "帮我创建一个会议", "识别窗口实时显示文字")
+        state.beginFinalizingRecognition()
+        check(state.recognitionStage == .finalizing, "识别窗口显示校正状态")
+        state.presentFinalRecognition("帮我创建一个下午三点的会议")
+        check(state.recognitionStage == .final && state.transcript == "帮我创建一个下午三点的会议", "识别窗口保留最终采用文字")
         state.beginExecution(title: "自检任务")
         check(state.overlayMode == .task && state.steps.count == 3, "执行卡状态切换")
         check(

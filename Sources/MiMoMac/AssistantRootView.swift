@@ -408,12 +408,12 @@ private struct ConversationBubble: View {
                     .fill(Color(nsColor: .windowBackgroundColor).opacity(0.88))
                     .frame(width: 9, height: 18)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Circle()
                             .fill(state.phaseColor)
                             .frame(width: 5, height: 5)
-                        Text(state.phase.rawValue)
+                        Text(recognitionStatus)
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .foregroundStyle(state.phaseColor)
                         Text(state.modelLabel)
@@ -422,10 +422,11 @@ private struct ConversationBubble: View {
                     }
 
                     Text(state.transcript)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(.primary.opacity(0.88))
-                        .lineLimit(2)
-                        .contentTransition(.numericText())
+                        .lineLimit(3)
+                        .frame(minHeight: 34, alignment: .topLeading)
+                        .contentTransition(.opacity)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
@@ -447,6 +448,17 @@ private struct ConversationBubble: View {
         }
         .padding(.horizontal, 4)
         .animation(.easeOut(duration: 0.18), value: state.transcript)
+        .animation(.easeOut(duration: 0.18), value: state.recognitionStage)
+    }
+
+    private var recognitionStatus: String {
+        guard state.phase == .listening else { return state.phase.rawValue }
+        return switch state.recognitionStage {
+        case .waiting: "等待声音"
+        case .live: "实时识别"
+        case .finalizing: "正在校正"
+        case .final: "已采用这句话"
+        }
     }
 
     private func primaryAction() {

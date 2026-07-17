@@ -28,6 +28,13 @@ final class AppState: ObservableObject {
         case error = "出现问题"
     }
 
+    enum RecognitionStage: Equatable {
+        case waiting
+        case live
+        case finalizing
+        case final
+    }
+
     struct TaskStep: Identifiable, Equatable {
         enum Status: Equatable { case pending, active, complete }
         let id: UUID
@@ -65,6 +72,7 @@ final class AppState: ObservableObject {
     @Published var activitySource = "本机"
     @Published var remoteChannelStatus = "飞书未配置"
     @Published var transcript = "需要我做什么？"
+    @Published private(set) var recognitionStage: RecognitionStage = .waiting
     @Published var modelLabel = "MiMo"
     @Published var taskTitle = "准备任务"
     @Published var progress = 0.0
@@ -154,19 +162,35 @@ final class AppState: ObservableObject {
         phase = .listening
         activitySource = "麦克风"
         transcript = preservingApproval ? "请说“允许执行”或“取消执行”" : "我在听…"
+        recognitionStage = .waiting
         approvalIsListening = preservingApproval
         if preservingApproval { approvalHeardText = "" }
         progress = 0
         steps = []
     }
 
-    func updateTranscript(_ text: String) {
+    func updateTranscript(_ text: String, isFinal: Bool = false) {
         guard phase == .listening else { return }
         if showPermission {
             approvalHeardText = text
             return
         }
-        transcript = text.isEmpty ? "我在听…" : text
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        transcript = cleaned.isEmpty ? "我在听…" : cleaned
+        recognitionStage = cleaned.isEmpty ? .waiting : (isFinal ? .final : .live)
+    }
+
+    func beginFinalizingRecognition() {
+        guard phase == .listening, !showPermission else { return }
+        recognitionStage = .finalizing
+    }
+
+    func presentFinalRecognition(_ text: String) {
+        guard phase == .listening, !showPermission else { return }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        transcript = cleaned
+        recognitionStage = .final
     }
 
     func beginThinking(userText: String) {

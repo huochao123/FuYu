@@ -328,6 +328,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             guard let self, !Task.isCancelled else { return }
             var finalText = self.latestTranscript.isEmpty ? captured : self.latestTranscript
             self.stopRecognitionResources()
+            self.state.beginFinalizingRecognition()
             if self.preferences.recognitionEngine == .mimoHybrid,
                let capturedRecordingURL {
                 do {
@@ -344,6 +345,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 self.state.resetToIdle()
                 return
             }
+            self.state.presentFinalRecognition(finalText)
+            // Keep the exact sentence FuYu will use on screen long enough for
+            // the user to verify it before the assistant starts thinking.
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled else { return }
             self.listeningForTaskInterruption = false
             self.onTranscriptReady?(finalText)
         }
@@ -728,6 +734,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     ) -> SFSpeechRecognitionTask {
         recognizer.recognitionTask(with: request) { [weak service] result, error in
             let transcript = result?.bestTranscription.formattedString
+            let isFinal = result?.isFinal ?? false
             let errorDescription = error?.localizedDescription
             Task { @MainActor in
                 guard let service else { return }
@@ -738,7 +745,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 if let transcript {
                     if service.handleBargeInTranscript(transcript) { return }
                     service.latestTranscript = transcript
-                    service.state.updateTranscript(service.latestTranscript)
+                    service.state.updateTranscript(service.latestTranscript, isFinal: isFinal)
                     if service.handleApprovalTranscript(transcript) { return }
                     service.scheduleAutomaticSubmission(for: transcript)
                 }

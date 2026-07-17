@@ -1,5 +1,15 @@
 # 更新日志 / Changelog
 
+## v0.7.3 — 2026-07-17
+
+- 悬浮语音窗口新增“等待声音、实时识别、正在校正、已采用这句话”四段可见状态。
+- 说话时 Apple 语音识别的临时结果会逐句更新，不再只显示抽象的收音动画。
+- MiMo 混合识别完成后会明确展示最终采用的文字，并停留片刻再进入思考，方便确认浮屿究竟听到了什么。
+- 扩大悬浮窗文字区域，支持最多三行识别内容，长一些的口述也不会被压缩成难以辨认的一行。
+
+- Added visible partial and final speech transcripts to the floating voice window.
+- The final sentence now remains on screen briefly before FuYu starts processing it.
+
 ## v0.7.2 — 2026-07-17
 
 - 调整 Fn 语音音量逻辑：按下并收音时允许 macOS 临时压低媒体声音，松开 Fn 或结束收音后恢复到按下前的音量。
