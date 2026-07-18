@@ -16,6 +16,10 @@ enum AgentToolID: String, CaseIterable, Codable, Sendable {
     case hotProcesses = "mac.hot_processes"
     case appLeftovers = "mac.app_leftovers"
     case optimization = "mac.optimization"
+    case appHealth = "mac.app_health"
+    case batteryHealth = "mac.battery_health"
+    case privacyAudit = "mac.privacy_audit"
+    case incidentSnapshot = "mac.incident_snapshot"
     case volume = "mac.volume"
     case brightness = "mac.brightness"
     case openApplication = "mac.open_application"
@@ -48,6 +52,10 @@ enum AgentToolRegistry {
         .init(id: .hotProcesses, title: "发热进程", purpose: "读取持续高 CPU 进程", risk: .readOnly, arguments: "无"),
         .init(id: .appLeftovers, title: "应用残留", purpose: "扫描应用缓存和卸载残留", risk: .readOnly, arguments: "无"),
         .init(id: .optimization, title: "优化建议", purpose: "综合存储和性能状态给出建议", risk: .readOnly, arguments: "无"),
+        .init(id: .appHealth, title: "应用健康", purpose: "建立当前进程负载与后台启动快照", risk: .readOnly, arguments: "无"),
+        .init(id: .batteryHealth, title: "电池与发热", purpose: "读取供电、睡眠阻止项和能耗来源", risk: .readOnly, arguments: "无"),
+        .init(id: .privacyAudit, title: "隐私权限", purpose: "核对浮屿自身可验证的隐私权限，不触发授权", risk: .readOnly, arguments: "无"),
+        .init(id: .incidentSnapshot, title: "故障现场", purpose: "记录带时间的系统、磁盘、供电与进程现场", risk: .readOnly, arguments: "无"),
         .init(id: .volume, title: "音量", purpose: "读取、设置、增减音量或静音", risk: .reversible, arguments: "action=read|set|change|mute，value=0...100 或增量，muted=true|false"),
         .init(id: .brightness, title: "亮度", purpose: "在硬件支持时读取或调整屏幕亮度", risk: .reversible, arguments: "action=read|set|change，value=0...100 或增量"),
         .init(id: .openApplication, title: "打开应用", purpose: "直接在本机打开已安装应用，不经过 Hermes", risk: .reversible, arguments: "name=应用名称"),
@@ -73,6 +81,10 @@ enum AgentToolRegistry {
         case .hotProcesses: .scan(.hotProcesses)
         case .appLeftovers: .scan(.appLeftovers)
         case .optimization: .scan(.optimization)
+        case .appHealth: .scan(.appHealth)
+        case .batteryHealth: .scan(.batteryHealth)
+        case .privacyAudit: .scan(.privacyAudit)
+        case .incidentSnapshot: .scan(.incidentSnapshot)
         case .capabilities: .capabilities
         case .applyJunkCleanup: .applyLatest(.junkScan)
         case .applyDownloadsOrganization: .applyLatest(.organize)

@@ -1,3 +1,6 @@
+import ApplicationServices
+import AVFoundation
+import CoreGraphics
 import CryptoKit
 import Foundation
 import CleanerEngine
@@ -12,6 +15,10 @@ enum MacCareTool: String, CaseIterable, Sendable, Hashable {
     case hotProcesses = "发热进程"
     case appLeftovers = "应用残留"
     case optimization = "优化建议"
+    case appHealth = "应用健康"
+    case batteryHealth = "电池与发热"
+    case privacyAudit = "隐私权限"
+    case incidentSnapshot = "故障现场"
 }
 
 struct FileOrganizationMove: Sendable {
@@ -37,6 +44,7 @@ enum MacCareAction: Sendable {
     case revealFiles([URL])
     case openLoginItems
     case openActivityMonitor
+    case openPrivacySettings
     case runTool(MacCareTool)
 }
 
@@ -144,10 +152,13 @@ struct MacDiagnosticFinding: Sendable {
 
     private static func skillID(for tool: MacCareTool) -> String {
         switch tool {
-        case .systemCheck, .optimization, .hotProcesses: "mac-thermal"
+        case .systemCheck, .optimization, .hotProcesses, .incidentSnapshot: "mac-thermal"
         case .junkScan, .largeFiles, .appLeftovers: "mac-storage"
         case .organize, .duplicates: "mac-files"
         case .loginItems: "mac-launchd"
+        case .appHealth: "mac-processes"
+        case .batteryHealth: "mac-battery"
+        case .privacyAudit: "mac-privacy"
         }
     }
 
@@ -162,6 +173,10 @@ struct MacDiagnosticFinding: Sendable {
         case .hotProcesses: "持续高负载可能导致发热、风扇噪声、耗电和卡顿；单次快照不能证明故障。"
         case .appLeftovers: "可能浪费存储；缓存候选不一定是卸载残留，误删可能导致重新下载或状态丢失。"
         case .optimization: "可能涉及存储、后台负载和续航；应按建议逐项验证，不能一键盲目修改。"
+        case .appHealth: "持续异常的应用可能造成卡顿、耗电、发热或登录变慢；单次快照只能作为当前证据。"
+        case .batteryHealth: "电池状态会影响续航和峰值性能；温度和耗电判断必须结合供电状态与进程负载。"
+        case .privacyAudit: "高权限会扩大应用可访问的数据范围；权限是否合理取决于实际功能和使用习惯。"
+        case .incidentSnapshot: "现场快照用于保留异常发生时的证据，本身不会修改系统或证明单一根因。"
         }
     }
 
@@ -206,6 +221,10 @@ enum MacCareService {
         case .hotProcesses: return try hotProcessScan()
         case .appLeftovers: return try appLeftoverScan()
         case .optimization: return try optimizationScan()
+        case .appHealth: return try appHealthScan()
+        case .batteryHealth: return try batteryHealthScan()
+        case .privacyAudit: return privacyAudit()
+        case .incidentSnapshot: return try incidentSnapshot()
         }
     }
 
@@ -572,6 +591,129 @@ enum MacCareService {
         )
     }
 
+    private static func appHealthScan() throws -> MacCareReport {
+        let processes = try topProcesses(limit: 12)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let launchRoots = [
+            home.appendingPathComponent("Library/LaunchAgents"),
+            URL(fileURLWithPath: "/Library/LaunchAgents"),
+            URL(fileURLWithPath: "/Library/LaunchDaemons")
+        ]
+        let launchCount = launchRoots.reduce(0) { total, root in
+            total + (((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "plist" }.count)
+        }
+        return .init(
+            tool: .appHealth,
+            headline: "已建立当前应用健康快照：读取进程负载与后台启动配置，没有结束应用。",
+            details: ["后台启动配置：\(launchCount) 个", "以下为当前资源快照，不代表长期异常"] + processes,
+            recommendations: [
+                .init(
+                    title: "确认持续高负载应用",
+                    benefit: "观察一段时间可以区分正常短时任务与持续异常。",
+                    risk: "强制退出可能丢失未保存内容；系统进程不要随意结束。",
+                    buttonTitle: "打开活动监视器",
+                    action: .openActivityMonitor
+                ),
+                .init(
+                    title: "核对后台启动来源",
+                    benefit: "关闭确实不需要的常驻项可能缩短登录时间并降低后台耗电。",
+                    risk: "同步、驱动和安全工具的后台项可能是正常功能的一部分。",
+                    buttonTitle: "查看登录项",
+                    action: .openLoginItems
+                )
+            ]
+        )
+    }
+
+    private static func batteryHealthScan() throws -> MacCareReport {
+        let battery = try command("/usr/bin/pmset", arguments: ["-g", "batt"])
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let assertions = (try? command("/usr/bin/pmset", arguments: ["-g", "assertions"])) ?? ""
+        let blockers = assertions.split(separator: "\n")
+            .filter { $0.contains("PreventUserIdleSystemSleep") || $0.contains("PreventSystemSleep") }
+            .prefix(5).map { String($0).trimmingCharacters(in: .whitespaces) }
+        let processes = try topProcesses(limit: 5)
+        let details = [battery.isEmpty ? "未读取到电池状态" : battery]
+            + (blockers.isEmpty ? ["当前未发现明显的睡眠阻止摘要"] : ["睡眠相关断言："] + blockers)
+            + ["当前高负载进程："] + processes
+        return .init(
+            tool: .batteryHealth,
+            headline: "已读取供电、电量、睡眠阻止项和当前高负载进程；没有修改节能设置。",
+            details: details,
+            recommendations: processes.isEmpty ? [] : [.init(
+                title: "核对当前能耗来源",
+                benefit: "确认不需要的持续高负载任务，有助于改善续航并降低发热。",
+                risk: "视频、编译、同步等工作本来就会短时耗电，结束前请保存进度。",
+                buttonTitle: "打开活动监视器",
+                action: .openActivityMonitor
+            )]
+        )
+    }
+
+    private static func privacyAudit() -> MacCareReport {
+        func status(_ value: AVAuthorizationStatus) -> String {
+            switch value {
+            case .authorized: "已允许"
+            case .denied: "已拒绝"
+            case .restricted: "受系统限制"
+            case .notDetermined: "尚未请求"
+            @unknown default: "未知"
+            }
+        }
+        let details = [
+            "浮屿麦克风：\(status(AVCaptureDevice.authorizationStatus(for: .audio)))",
+            "浮屿摄像头：\(status(AVCaptureDevice.authorizationStatus(for: .video)))（当前功能不需要摄像头）",
+            "浮屿屏幕录制：\(CGPreflightScreenCaptureAccess() ? "已允许" : "未允许或尚未请求")",
+            "浮屿辅助功能：\(AXIsProcessTrusted() ? "已允许" : "未允许")",
+            "macOS 不允许普通应用静默读取其他应用的完整权限数据库；此处只显示浮屿自身可验证状态。"
+        ]
+        return .init(
+            tool: .privacyAudit,
+            headline: "已核对浮屿自身的关键隐私权限，没有请求新权限。",
+            details: details,
+            recommendations: [.init(
+                title: "在系统设置中核对全部应用",
+                benefit: "可以逐项查看哪些应用拥有麦克风、屏幕录制和辅助功能权限。",
+                risk: "撤销权限会立即影响对应应用功能；不认识的项目先确认来源。",
+                buttonTitle: "打开隐私与安全性",
+                action: .openPrivacySettings
+            )]
+        )
+    }
+
+    private static func incidentSnapshot() throws -> MacCareReport {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let volume = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey])
+        let available = Int64(volume?.volumeAvailableCapacityForImportantUsage ?? 0)
+        let total = Int64(volume?.volumeTotalCapacity ?? 0)
+        let power = ((try? command("/usr/bin/pmset", arguments: ["-g", "batt"])) ?? "未读取到供电状态")
+            .replacingOccurrences(of: "\n", with: " ")
+        var details = [
+            "采集时间：\(Date().formatted(date: .abbreviated, time: .standard))",
+            "系统：\(ProcessInfo.processInfo.operatingSystemVersionString)",
+            String(format: "本次开机已运行 %.1f 小时", ProcessInfo.processInfo.systemUptime / 3_600),
+            "磁盘可用：\(format(available)) / \(format(total))",
+            "供电：\(power)",
+            "当前进程快照："
+        ]
+        let processes = try topProcesses(limit: 10)
+        details.append(contentsOf: processes)
+        return .init(
+            tool: .incidentSnapshot,
+            headline: "故障现场已记录到本机健康时间线，可用于之后复盘当时状态。",
+            details: details,
+            recommendations: processes.isEmpty ? [] : [.init(
+                title: "进一步观察资源变化",
+                benefit: "活动监视器可以确认快照中的高负载是否仍在持续。",
+                risk: "现场快照只是一个时间点，不能单独证明某个进程就是根因。",
+                buttonTitle: "打开活动监视器",
+                action: .openActivityMonitor
+            )]
+        )
+    }
+
     private static func fileEntries(in roots: [URL], recursive: Bool, itemLimit: Int) throws -> [FileEntry] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
         var result: [FileEntry] = []
@@ -658,6 +800,20 @@ enum MacCareService {
             }
             return "\(name)：CPU \(cpu)%，内存 \(memory)%\(note)"
         }
+    }
+
+    private static func command(_ executable: String, arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else { throw CocoaError(.executableLoad) }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func friendlyProcessName(_ path: String) -> String {

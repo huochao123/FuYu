@@ -262,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         throw NSError(domain: "FuYuMacCare", code: 3, userInfo: [NSLocalizedDescriptionKey: "智能整理执行器没有真实移动测试文件"])
                     }
                     let actionable = reports.filter { !$0.recommendations.isEmpty }.count
-                    print("浮屿电脑管家自检通过：9/9 项返回真实本机结果，\(actionable) 项提供可执行建议；发热监控采样到 \(monitor.processCount) 个进程；智能整理执行器已真实移动并验证临时文件。")
+                    print("浮屿电脑管家自检通过：\(reports.count)/\(MacCareTool.allCases.count) 项返回真实本机结果，\(actionable) 项提供可执行建议；发热监控采样到 \(monitor.processCount) 个进程；智能整理执行器已真实移动并验证临时文件。")
                     self?.shortcutMonitor?.stop()
                     exit(0)
                 } catch {

@@ -807,6 +807,12 @@ final class AssistantRuntime {
         case .openActivityMonitor:
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
             return MacCareReport(tool: .hotProcesses, headline: "已打开活动监视器", details: ["结束进程前请先保存工作"])
+        case .openPrivacySettings:
+            let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")!
+            if !NSWorkspace.shared.open(url) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+            }
+            return MacCareReport(tool: .privacyAudit, headline: "已打开隐私与安全性", details: ["撤销权限前请确认对应功能是否仍需要"])
         case let .runTool(tool):
             return try await MacCareService.run(tool)
         }

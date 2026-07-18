@@ -138,6 +138,11 @@ enum SelfTestRunner {
             try? FileManager.default.removeItem(at: habitURL)
         }
         let preferences = AssistantPreferences(defaults: testDefaults, habitStoreURL: habitURL)
+        let idleVoiceService = VoiceService(state: state, preferences: preferences)
+        check(
+            idleVoiceService.verifyIdleCancellationDoesNotTouchAudioInput(),
+            "纯文字入口取消空闲语音状态时不初始化麦克风"
+        )
         check(
             preferences.spokenText(fullText: "好的，已经完成。", suggested: nil) == "好的，已经完成。",
             "智能播报保留短结论"
@@ -176,7 +181,14 @@ enum SelfTestRunner {
         check(preferences.voiceInputEnabled, "主界面语音识别总开关默认开启")
         check(preferences.autonomousMaintenance, "低频自主维护默认开启且只做本机检测")
         check(MainWindowTheme.allCases.count == 3 && preferences.mainWindowTheme == .deepOcean, "三套主界面皮肤与深海默认主题")
-        check(MacCareTool.allCases.count == 9, "电脑管家九项本机工具注册")
+        check(
+            MacCareTool.allCases.count == 13
+                && MacCareTool.allCases.contains(.appHealth)
+                && MacCareTool.allCases.contains(.batteryHealth)
+                && MacCareTool.allCases.contains(.privacyAudit)
+                && MacCareTool.allCases.contains(.incidentSnapshot),
+            "电脑管家十三项本机工具注册"
+        )
         let organizeRoot = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-undo-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: organizeRoot, withIntermediateDirectories: true)

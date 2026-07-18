@@ -49,12 +49,26 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var isContinuousFollowUp = false
     private var activeSystemUtteranceID: ObjectIdentifier?
     private var activeAudioPlayerID: ObjectIdentifier?
+    private var audioInputAccessCount = 0
 
     init(state: AppState, preferences: AssistantPreferences) {
         self.state = state
         self.preferences = preferences
         super.init()
         synthesizer.delegate = self
+    }
+
+    /// Regression probe for the text path: cancelling an idle voice service
+    /// must not materialize AVAudioEngine.inputNode or touch microphone state.
+    func verifyIdleCancellationDoesNotTouchAudioInput() -> Bool {
+        let before = audioInputAccessCount
+        cancelAll()
+        return audioInputAccessCount == before
+    }
+
+    private func trackedInputNode() -> AVAudioInputNode {
+        audioInputAccessCount &+= 1
+        return audioEngine.inputNode
     }
 
     var permissionSummary: String {
@@ -120,7 +134,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         audioBufferCount = 0
 
         outputVolumeBeforeListening = try? await LocalMacControlService.shared.volumeState()
-        let input = audioEngine.inputNode
+        let input = trackedInputNode()
         if !input.isVoiceProcessingEnabled {
             try? input.setVoiceProcessingEnabled(true)
         }
@@ -282,7 +296,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
 
         outputVolumeBeforeListening = try? await LocalMacControlService.shared.volumeState()
-        let input = audioEngine.inputNode
+        let input = trackedInputNode()
         // Keep Apple's voice-processing path enabled during normal listening
         // as well as barge-in. Its acoustic echo cancellation substantially
         // reduces speech coming back through the Mac's own speakers.
@@ -781,8 +795,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     private func endVoiceProcessingAndRestoreVolume() {
-        if audioEngine.inputNode.isVoiceProcessingEnabled {
-            try? audioEngine.inputNode.setVoiceProcessingEnabled(false)
+        let input = trackedInputNode()
+        if input.isVoiceProcessingEnabled {
+            try? input.setVoiceProcessingEnabled(false)
         }
         scheduleOutputVolumeRestore()
     }
@@ -950,16 +965,27 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     private func stopRecognitionResources() {
+        // AVAudioEngine.inputNode is lazy. Merely touching it initializes the
+        // microphone/CoreAudio pipeline, which must never happen when a text
+        // interaction calls cancelAll() without an active voice session.
+        let hadActiveCapture = isListening
+            || tapInstalled
+            || recognitionRequest != nil
+            || recognitionTask != nil
+            || recordingFile != nil
+
         audioStartupWatchdogTask?.cancel()
         audioStartupWatchdogTask = nil
         voiceActivitySubmissionTask?.cancel()
         voiceActivitySubmissionTask = nil
         silenceTask?.cancel()
         silenceTask = nil
-        if audioEngine.isRunning {
-            audioEngine.stop()
+        if hadActiveCapture {
+            if audioEngine.isRunning {
+                audioEngine.stop()
+            }
+            removeTapIfNeeded()
         }
-        removeTapIfNeeded()
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionTask = nil
@@ -968,8 +994,12 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         recordingFile = nil
         isListening = false
         state.audioLevel = 0
-        audioEngine.reset()
-        endVoiceProcessingAndRestoreVolume()
+        if hadActiveCapture {
+            audioEngine.reset()
+            endVoiceProcessingAndRestoreVolume()
+        } else {
+            logger.debug("Skipped audio teardown because no capture session was active")
+        }
     }
 
     private func handleRecognitionInterruption(_ description: String) {
@@ -1049,7 +1079,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     private func removeTapIfNeeded() {
         guard tapInstalled else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
+        trackedInputNode().removeTap(onBus: 0)
         tapInstalled = false
     }
 

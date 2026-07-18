@@ -4,9 +4,9 @@ import SwiftUI
 
 @MainActor
 final class MainAssistantViewState: ObservableObject {
-    enum Section { case conversation, manager, tasks }
+    enum Section { case overview, conversation, manager, tasks }
     @Published var draft = ""
-    @Published var section: Section = .conversation
+    @Published var section: Section = .overview
     @Published var activeTool: String?
     @Published var activeTools: Set<String> = []
     @Published var completedTool: String?
@@ -32,32 +32,19 @@ struct MainAssistantView: View {
     var body: some View {
         ZStack {
             background
-            HStack(spacing: 12) {
-                assistantStage
-                    .frame(minWidth: 380, idealWidth: 400, maxWidth: 420)
-                    .background(
-                        LinearGradient(
-                            colors: [.white.opacity(0.055), state.phaseColor.opacity(0.035), .black.opacity(0.08)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .strokeBorder(.white.opacity(0.09), lineWidth: 1)
-                    )
-                rightPanel
-                    .frame(minWidth: 560, idealWidth: 700, maxWidth: .infinity)
-                    .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 28, style: .continuous)
-                            .strokeBorder(.white.opacity(0.075), lineWidth: 1)
-                    )
+            HStack(spacing: 10) {
+                navigationRail
+                    .frame(width: 86)
+                contentWorkspace
+                    .frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(.white.opacity(0.075)))
+                intelligenceRail
+                    .frame(width: 286)
             }
-            .padding(14)
+            .padding(12)
         }
-        .frame(minWidth: 980, minHeight: 650)
+        .frame(minWidth: 1120, minHeight: 700)
         .preferredColorScheme(.dark)
         .onChange(of: state.phase) { _, phase in
             guard viewState.maintenanceTask == nil, viewState.activeTools.isEmpty else { return }
@@ -94,6 +81,310 @@ struct MainAssistantView: View {
                 if viewState.activeTool == report.tool.rawValue { viewState.activeTool = nil }
             }
         }
+    }
+
+    private var navigationRail: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle().fill(themeAccent.opacity(0.16))
+                Image(systemName: "waveform.path.ecg.rectangle.fill")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(themeAccent)
+            }
+            .frame(width: 42, height: 42)
+            .shadow(color: themeAccent.opacity(0.28), radius: 14)
+            Text("浮屿")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+
+            Spacer().frame(height: 8)
+            navigationButton("总览", icon: "rectangle.3.group.fill", section: .overview)
+            navigationButton("对话", icon: "bubble.left.and.bubble.right.fill", section: .conversation)
+            navigationButton("管家", icon: "desktopcomputer.and.macbook", section: .manager)
+            navigationButton("任务", icon: "clock.arrow.trianglehead.counterclockwise.rotate.90", section: .tasks)
+
+            Spacer()
+            Button(action: showSettings) {
+                VStack(spacing: 5) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("设置").font(.system(size: 9, weight: .semibold, design: .rounded))
+                }
+                .frame(width: 62, height: 50)
+            }
+            .buttonStyle(MainTapButtonStyle())
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 16)
+        .fuyuLiquidGlass(tint: .white.opacity(0.025), interactive: false,
+                         in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+    }
+
+    private func navigationButton(_ title: String, icon: String, section: MainAssistantViewState.Section) -> some View {
+        let selected = viewState.section == section
+        return Button {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { viewState.section = section }
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .symbolEffect(.bounce, value: selected)
+                Text(title).font(.system(size: 9, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(selected ? .white : .secondary)
+            .frame(width: 62, height: 50)
+            .background(selected ? themeAccent.opacity(0.19) : .clear,
+                        in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(selected ? themeAccent.opacity(0.3) : .clear))
+        }
+        .buttonStyle(MainTapButtonStyle(pressedScale: 0.93))
+    }
+
+    @ViewBuilder
+    private var contentWorkspace: some View {
+        switch viewState.section {
+        case .overview: overviewContent
+        case .conversation: conversationWorkspace
+        case .manager: managerContent
+        case .tasks: taskCenterContent
+        }
+    }
+
+    private var conversationWorkspace: some View {
+        VStack(spacing: 0) {
+            workspaceHeader("与浮屿对话", detail: "打字与语音是两条独立通道 · 本机工具结果会自动进入上下文")
+            Divider().opacity(0.18)
+            conversationContent
+        }
+    }
+
+    private var overviewContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("这台 Mac，现在怎么样？")
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                        Text("浮屿会记录异常发生的时间、原因、处理过程与复查结果。")
+                            .font(.system(size: 10.5, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    workspaceStatusPill
+                }
+
+                systemDashboard
+
+                HStack(alignment: .top, spacing: 12) {
+                    overviewInsightCard
+                    guardianCard
+                }
+
+                HStack {
+                    Text("快捷操作")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                    Spacer()
+                    Button("查看全部工具") { withAnimation { viewState.section = .manager } }
+                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                        .buttonStyle(MainTapButtonStyle())
+                        .foregroundStyle(themeAccent)
+                }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                    overviewQuickAction("系统体检", icon: "stethoscope", tint: .cyan)
+                    overviewQuickAction("发热进程", icon: "thermometer.high", tint: .orange)
+                    overviewQuickAction("垃圾清理", icon: "sparkles.rectangle.stack", tint: .mint)
+                    overviewQuickAction("故障现场", icon: "camera.metering.center.weighted", tint: .blue)
+                }
+
+                if !deduplicatedHealthEvents.isEmpty {
+                    HStack {
+                        Text("最近健康事件")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Spacer()
+                        Button("完整时间线") { withAnimation { viewState.section = .tasks } }
+                            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                            .buttonStyle(MainTapButtonStyle())
+                            .foregroundStyle(themeAccent)
+                    }
+                    ForEach(Array(deduplicatedHealthEvents.suffix(3).reversed())) { event in
+                        healthEventCard(event)
+                    }
+                }
+            }
+            .padding(22)
+        }
+    }
+
+    private var overviewInsightCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("浮屿判断", systemImage: "sparkles")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(themeAccent)
+            if let finding = state.latestMacDiagnosticFinding {
+                Text(finding.summary).font(.system(size: 12, weight: .bold, design: .rounded)).lineLimit(2)
+                Text(finding.impact).font(.system(size: 9.5, design: .rounded)).foregroundStyle(.secondary).lineLimit(3)
+                HStack {
+                    Text(finding.ownership.rawValue).font(.system(size: 8.5, weight: .semibold, design: .rounded)).foregroundStyle(.orange)
+                    Spacer()
+                    Button("查看并处理") { withAnimation { viewState.section = .manager } }
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .buttonStyle(MainTapButtonStyle())
+                }
+            } else {
+                Text("还没有检测记录").font(.system(size: 12, weight: .bold, design: .rounded))
+                Text("进行一次系统体检后，这里会解释问题、影响、风险和可执行方案。")
+                    .font(.system(size: 9.5, design: .rounded)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+        .padding(15)
+        .fuyuLiquidGlass(tint: themeAccent.opacity(0.055), interactive: false,
+                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var guardianCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("安全守护", systemImage: "shield.lefthalf.filled")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.mint)
+                Spacer()
+                Toggle("", isOn: $preferences.autonomousMaintenance).labelsHidden().toggleStyle(.switch)
+            }
+            Text(preferences.autonomousMaintenance ? "建议模式已开启" : "当前仅在你主动操作时检查")
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+            Text("最多每 12 小时进行一次低负载只读体检；发现异常会解释原因，任何修改仍需确认。")
+                .font(.system(size: 9.5, design: .rounded))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+        .padding(15)
+        .fuyuLiquidGlass(tint: .mint.opacity(0.05), interactive: false,
+                         in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func overviewQuickAction(_ title: String, icon: String, tint: Color) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { viewState.section = .manager }
+            beginManagerTool(title, prompt: quickActionPrompt(title))
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon).foregroundStyle(tint)
+                Text(title).font(.system(size: 10, weight: .semibold, design: .rounded))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11)
+            .frame(maxWidth: .infinity, minHeight: 42)
+            .fuyuLiquidGlass(tint: tint.opacity(0.07), interactive: true,
+                             in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(MainTapButtonStyle(pressedScale: 0.95))
+    }
+
+    private func quickActionPrompt(_ title: String) -> String {
+        switch title {
+        case "系统体检": "对这台 Mac 做一次只读系统体检，不修改设置；给出异常、影响和可执行建议。"
+        case "发热进程": "只读检查当前和持续高负载进程，说明发热原因、影响和安全处理方式。"
+        case "垃圾清理": "扫描白名单缓存和日志，只生成清理预览，不删除文件。"
+        case "故障现场": "生成一份当前故障现场快照，记录时间、负载、进程、磁盘、电池和网络状态，不修改系统。"
+        default: title
+        }
+    }
+
+    private var intelligenceRail: some View {
+        VStack(spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("浮屿智能中枢").font(.system(size: 13, weight: .bold, design: .rounded))
+                    Text(state.activitySource).font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                statusPill
+            }
+
+            ReactiveVoiceField(phase: state.phase, color: state.phaseColor, audioLevel: state.audioLevel)
+                .frame(height: 150)
+                .background(.black.opacity(0.13), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(state.phaseColor.opacity(0.13)))
+                .onTapGesture(perform: startVoice)
+
+            VStack(spacing: 4) {
+                Text(state.phase.rawValue)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(state.phaseColor)
+                Text(stageCaption)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+
+            Button(action: startVoice) {
+                Label(voiceButtonTitle, systemImage: voiceButtonIcon).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(MainGlassActionButtonStyle(tint: state.phase == .listening ? .red : themeAccent,
+                                                     prominent: true, height: 42, cornerRadius: 14))
+            .disabled(!preferences.voiceInputEnabled)
+
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation { preferences.voiceInputEnabled.toggle() }
+                } label: {
+                    Label(preferences.voiceInputEnabled ? "语音开" : "语音关",
+                          systemImage: preferences.voiceInputEnabled ? "mic.fill" : "mic.slash.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(MainGlassActionButtonStyle(tint: preferences.voiceInputEnabled ? .cyan : .gray,
+                                                         prominent: false, height: 36, cornerRadius: 12))
+                Button(action: showSettings) {
+                    Label("设置", systemImage: "gearshape.fill").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(MainGlassActionButtonStyle(tint: themeSecondary, prominent: false, height: 36, cornerRadius: 12))
+            }
+
+            Divider().opacity(0.18)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text("任务轨道").font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    Spacer()
+                    Text("\(state.backgroundJobs.filter { $0.status == .running || $0.status == .stalled }.count) 运行中")
+                        .font(.system(size: 8.5, design: .rounded)).foregroundStyle(.secondary)
+                }
+                ForEach(Array(state.backgroundJobs.suffix(3).reversed())) { job in
+                    HStack(spacing: 8) {
+                        Circle().fill(job.status == .failed ? Color.red : (job.status == .completed ? Color.mint : Color.cyan)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(job.title).font(.system(size: 9.5, weight: .semibold, design: .rounded)).lineLimit(1)
+                            Text(job.summary).font(.system(size: 8, design: .rounded)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
+                if state.backgroundJobs.isEmpty {
+                    Text("后台任务会在这里持续显示，不会阻塞对话。")
+                        .font(.system(size: 8.5, design: .rounded)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer()
+        }
+        .padding(16)
+        .fuyuLiquidGlass(tint: themeAccent.opacity(0.025), interactive: false,
+                         in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+    }
+
+    private func workspaceHeader(_ title: String, detail: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 17, weight: .bold, design: .rounded))
+                Text(detail).font(.system(size: 9.5, design: .rounded)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            workspaceStatusPill
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     private var background: some View {
@@ -592,6 +883,23 @@ struct MainAssistantView: View {
                             prompt: "只读扫描已卸载应用可能留下的缓存、偏好和支持文件，列出来源、大小与误删风险；不要删除。")
                         compactManagerButton("优化建议", icon: "gauge.with.dots.needle.67percent", tint: .green,
                             prompt: "分析这台 Mac 当前有哪些真正影响性能、发热、续航或存储的因素，先做只读检查并给出收益与风险。不要修改系统设置，等我确认后再执行。")
+                    }
+                }
+                .padding(12)
+                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.055)))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    managerSectionTitle("智能诊断", detail: "记录原因与时间，进入健康时间线")
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                        compactManagerButton("应用健康", icon: "app.badge.checkmark", tint: .cyan,
+                            prompt: "建立当前应用健康档案，读取资源负载与后台启动配置，说明可能影响；不要结束应用。")
+                        compactManagerButton("电池与发热", icon: "battery.75percent", tint: .green,
+                            prompt: "检查当前供电、电量、睡眠阻止项与高负载进程，分析续航和发热原因；不要修改节能设置。")
+                        compactManagerButton("隐私权限", icon: "hand.raised.fill", tint: .orange,
+                            prompt: "只读核对浮屿自身可验证的麦克风、屏幕录制与辅助功能权限，不要主动请求新权限。")
+                        compactManagerButton("故障现场", icon: "camera.metering.center.weighted", tint: .blue,
+                            prompt: "生成当前故障现场快照，记录准确时间、系统、磁盘、供电与高负载进程，不修改系统。")
                     }
                 }
                 .padding(12)
@@ -1391,6 +1699,10 @@ struct MainAssistantView: View {
         case "启动项": "检查后台常驻"
         case "发热进程": "持续负载判断"
         case "应用残留": "卸载后的缓存"
+        case "应用健康": "进程与后台档案"
+        case "电池与发热": "供电、耗电与温度"
+        case "隐私权限": "权限状态与风险"
+        case "故障现场": "保留异常时证据"
         default: "按收益给出建议"
         }
     }
@@ -1608,6 +1920,12 @@ struct MainAssistantView: View {
         case .openActivityMonitor:
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
             viewState.actionFeedback = "已打开活动监视器；请先保存工作，再决定是否结束高负载应用。"
+        case .openPrivacySettings:
+            let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")!
+            if !NSWorkspace.shared.open(url) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+            }
+            viewState.actionFeedback = "已打开隐私与安全性；撤销权限前请先确认对应功能是否仍需要。"
         case let .runTool(tool):
             beginManagerTool(tool.rawValue, prompt: "")
         }
