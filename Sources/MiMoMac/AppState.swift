@@ -35,6 +35,24 @@ final class AppState: ObservableObject {
         case final
     }
 
+    enum BackgroundTaskStatus: Equatable {
+        case running
+        case stalled
+        case completed
+        case failed
+    }
+
+    struct BackgroundJob: Identifiable, Equatable {
+        enum Kind: String, Equatable { case readOnly = "只读", localMutation = "本机修改", hermes = "跨应用" }
+        let id: UUID
+        let title: String
+        let kind: Kind
+        let startedAt: Date
+        var lastProgressAt: Date
+        var status: BackgroundTaskStatus
+        var summary: String
+    }
+
     struct TaskStep: Identifiable, Equatable {
         enum Status: Equatable { case pending, active, complete }
         let id: UUID
@@ -65,7 +83,35 @@ final class AppState: ObservableObject {
         }
     }
 
+    struct HealthEvent: Identifiable, Equatable, Codable {
+        enum Severity: String, Codable { case normal = "正常", attention = "关注", warning = "风险" }
+        let id: UUID
+        let occurredAt: Date
+        let category: String
+        let title: String
+        let evidence: String
+        let severity: Severity
+        let resolution: String
+
+        init(id: UUID = UUID(), occurredAt: Date = Date(), category: String, title: String,
+             evidence: String, severity: Severity, resolution: String) {
+            self.id = id
+            self.occurredAt = occurredAt
+            self.category = category
+            self.title = title
+            self.evidence = evidence
+            self.severity = severity
+            self.resolution = resolution
+        }
+    }
+
     @Published var isExpanded = false
+    @Published private(set) var voiceSessionActive = false
+    @Published private(set) var backgroundTaskTitle: String?
+    @Published private(set) var backgroundTaskStatus: BackgroundTaskStatus?
+    @Published private(set) var backgroundTaskStartedAt: Date?
+    @Published private(set) var backgroundTaskLastProgressAt: Date?
+    @Published private(set) var backgroundJobs: [BackgroundJob] = []
     @Published private(set) var interactionSource: InteractionSource = .voice
     @Published var phase: Phase = .idle
     @Published var audioLevel = 0.0
@@ -87,25 +133,41 @@ final class AppState: ObservableObject {
     @Published var showHistory = false
     @Published private(set) var latestMacCareReports: [MacCareTool: MacCareReport] = [:]
     @Published private(set) var latestMacCareReport: MacCareReport?
+    @Published private(set) var latestMacDiagnosticFindings: [MacCareTool: MacDiagnosticFinding] = [:]
+    @Published private(set) var latestMacDiagnosticFinding: MacDiagnosticFinding?
     @Published private(set) var macCareReportVersion = 0
+    @Published private(set) var healthEvents: [HealthEvent] = []
+    @Published private(set) var lastOrganizationTransaction: [CompletedFileMove] = []
 
     var onVoiceRequested: (() -> Void)?
     var onVoiceSubmitRequested: (() -> Void)?
     var onCancelRequested: (() -> Void)?
+    var onVoiceSessionEndRequested: (() -> Void)?
     var onApprovalGranted: ((UUID) -> Void)?
+    var onBackgroundJobCancelRequested: ((UUID) -> Void)?
 
     private var demoTask: Task<Void, Never>?
     private var replyCollapseTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
+    private var backgroundStatusDismissTask: Task<Void, Never>?
+    private var backgroundTaskMonitor: Task<Void, Never>?
+    private var backgroundJobMonitors: [UUID: Task<Void, Never>] = [:]
+    private var backgroundJobCancellationHandlers: [UUID: () -> Void] = [:]
+    private var legacyBackgroundJobID: UUID?
     private var isRunningDemo = false
     private let conversationHistoryURL: URL
+    private let healthEventsURL: URL
     private let memorySystem: FuYuMemorySystem
     private var isInitializingMemory = true
 
     init(historyURL: URL? = nil) {
         let resolvedHistoryURL = historyURL ?? Self.defaultConversationHistoryURL
         conversationHistoryURL = resolvedHistoryURL
+        healthEventsURL = historyURL == nil
+            ? resolvedHistoryURL.deletingLastPathComponent().appendingPathComponent("health-events.json")
+            : resolvedHistoryURL.deletingPathExtension().appendingPathExtension("health-events.json")
         memorySystem = FuYuMemorySystem(historyURL: resolvedHistoryURL)
+        healthEvents = Self.loadHealthEvents(from: healthEventsURL)
         if let stored = Self.loadConversationHistory(from: conversationHistoryURL), !stored.isEmpty {
             conversation = stored
         } else {
@@ -114,11 +176,29 @@ final class AppState: ObservableObject {
         conversation.removeAll {
             $0.text == "等待确认：创建腾讯会议\n下午 3 点到 4 点 · 单次会议 · 使用腾讯会议 MCP"
         }
+        deduplicateLegacyMacCareAlerts()
         markInterruptedActionIfNeeded()
         persistConversationHistory()
         memorySystem.bootstrapArchiveIfNeeded(with: conversation)
         memorySystem.bootstrapWorkingFocusIfNeeded(with: conversation)
         isInitializingMemory = false
+    }
+
+    private func deduplicateLegacyMacCareAlerts() {
+        let pattern = #"检测到\s+([^\s，]+)\s+(?:已连续|持续)高负载"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        var lastKept: [String: Date] = [:]
+        conversation = conversation.filter { item in
+            guard item.kind == .action else { return true }
+            let range = NSRange(item.text.startIndex..<item.text.endIndex, in: item.text)
+            guard let match = regex.firstMatch(in: item.text, range: range),
+                  let keyRange = Range(match.range(at: 1), in: item.text) else { return true }
+            let key = String(item.text[keyRange])
+            if item.text.hasPrefix("系统提醒："), lastKept[key] != nil { return false }
+            if let previous = lastKept[key], item.createdAt.timeIntervalSince(previous) < 2 * 60 * 60 { return false }
+            lastKept[key] = item.createdAt
+            return true
+        }
     }
 
     var phaseColor: Color {
@@ -154,6 +234,7 @@ final class AppState: ObservableObject {
 
     func beginListening(preservingApproval: Bool = false) {
         interactionSource = .voice
+        voiceSessionActive = true
         demoTask?.cancel()
         replyCollapseTask?.cancel()
         errorDismissTask?.cancel()
@@ -178,6 +259,12 @@ final class AppState: ObservableObject {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         transcript = cleaned.isEmpty ? "我在听…" : cleaned
         recognitionStage = cleaned.isEmpty ? .waiting : (isFinal ? .final : .live)
+    }
+
+    func noteDetectedVoiceActivity() {
+        guard phase == .listening, !showPermission, recognitionStage == .waiting else { return }
+        transcript = "听到声音，正在识别…"
+        recognitionStage = .live
     }
 
     func beginFinalizingRecognition() {
@@ -253,7 +340,12 @@ final class AppState: ObservableObject {
     }
 
     func updateExecution(progress newProgress: Double, step index: Int) {
-        progress = min(max(newProgress, 0), 1)
+        let bounded = min(max(newProgress, 0), 1)
+        if bounded > progress {
+            backgroundTaskLastProgressAt = Date()
+            if backgroundTaskStatus == .stalled { backgroundTaskStatus = .running }
+        }
+        progress = bounded
         guard steps.indices.contains(index) else { return }
         for i in steps.indices {
             if i < index { steps[i].status = .complete }
@@ -349,6 +441,179 @@ final class AppState: ObservableObject {
         resetToIdle(message: "已停止")
     }
 
+    func endVoiceSession() {
+        onVoiceSessionEndRequested?()
+        resetToIdle(message: "语音对话已结束")
+    }
+
+    @discardableResult
+    func beginBackgroundJob(
+        _ title: String,
+        kind: BackgroundJob.Kind,
+        onCancel: (() -> Void)? = nil
+    ) -> UUID {
+        let now = Date()
+        let id = UUID()
+        backgroundJobs.append(.init(id: id, title: title, kind: kind, startedAt: now, lastProgressAt: now, status: .running, summary: "已开始"))
+        if let onCancel { backgroundJobCancellationHandlers[id] = onCancel }
+        backgroundJobs = Array(backgroundJobs.suffix(20))
+        syncBackgroundSummary()
+        backgroundJobMonitors[id] = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled,
+                  let job = self.backgroundJobs.first(where: { $0.id == id }),
+                  job.status == .running || job.status == .stalled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled,
+                      let index = self.backgroundJobs.firstIndex(where: { $0.id == id }),
+                      self.backgroundJobs[index].status == .running,
+                      Self.shouldMarkBackgroundTaskStalled(
+                        startedAt: self.backgroundJobs[index].startedAt,
+                        lastProgressAt: self.backgroundJobs[index].lastProgressAt,
+                        now: Date()
+                      ) else { continue }
+                self.backgroundJobs[index].status = .stalled
+                self.backgroundJobs[index].summary = "超过 5 分钟没有新进度"
+                self.syncBackgroundSummary()
+                let elapsed = Self.elapsedDescription(from: self.backgroundJobs[index].startedAt, to: Date())
+                self.appendConversation(
+                    .error,
+                    "后台任务可能卡住：\(title) 已运行\(elapsed)，超过 5 分钟没有新进度。"
+                )
+                if !self.voiceSessionActive {
+                    self.presentNotification("后台任务“\(title)”可能卡住：已运行\(elapsed)，超过 5 分钟没有新进度。", recordInHistory: false)
+                }
+            }
+        }
+        return id
+    }
+
+    func updateBackgroundJob(_ id: UUID, summary: String) {
+        guard let index = backgroundJobs.firstIndex(where: { $0.id == id }) else { return }
+        backgroundJobs[index].lastProgressAt = Date()
+        backgroundJobs[index].status = .running
+        backgroundJobs[index].summary = summary
+        syncBackgroundSummary()
+    }
+
+    func finishBackgroundJob(_ id: UUID, summary: String, failed: Bool = false) {
+        backgroundJobMonitors[id]?.cancel()
+        backgroundJobMonitors[id] = nil
+        backgroundJobCancellationHandlers[id] = nil
+        guard let index = backgroundJobs.firstIndex(where: { $0.id == id }) else { return }
+        backgroundJobs[index].lastProgressAt = Date()
+        backgroundJobs[index].status = failed ? .failed : .completed
+        backgroundJobs[index].summary = summary
+        syncBackgroundSummary()
+    }
+
+    func requestCancelBackgroundJob(_ id: UUID) {
+        if let handler = backgroundJobCancellationHandlers[id] {
+            handler()
+        } else {
+            onBackgroundJobCancelRequested?(id)
+        }
+    }
+
+    func beginBackgroundTask(_ title: String) {
+        legacyBackgroundJobID = beginBackgroundJob(title, kind: .hermes)
+    }
+
+    func finishBackgroundTask(_ title: String, failed: Bool = false) {
+        guard let id = legacyBackgroundJobID else { return }
+        finishBackgroundJob(id, summary: title, failed: failed)
+        legacyBackgroundJobID = nil
+    }
+
+    func clearBackgroundTask() {
+        backgroundStatusDismissTask?.cancel()
+        backgroundStatusDismissTask = nil
+        backgroundTaskMonitor?.cancel()
+        backgroundTaskMonitor = nil
+        for task in backgroundJobMonitors.values { task.cancel() }
+        backgroundJobMonitors.removeAll()
+        backgroundJobCancellationHandlers.removeAll()
+        backgroundJobs.removeAll()
+        legacyBackgroundJobID = nil
+        backgroundTaskTitle = nil
+        backgroundTaskStatus = nil
+        backgroundTaskStartedAt = nil
+        backgroundTaskLastProgressAt = nil
+    }
+
+    private func syncBackgroundSummary() {
+        let candidate = backgroundJobs.reversed().first(where: { $0.status == .running || $0.status == .stalled })
+            ?? backgroundJobs.last
+        backgroundTaskTitle = candidate?.title
+        backgroundTaskStatus = candidate?.status
+        backgroundTaskStartedAt = candidate?.startedAt
+        backgroundTaskLastProgressAt = candidate?.lastProgressAt
+    }
+
+    var backgroundTaskElapsedDescription: String {
+        guard let startedAt = backgroundTaskStartedAt else { return "未知时长" }
+        return Self.elapsedDescription(from: startedAt, to: Date())
+    }
+
+    var backgroundTaskContextPrompt: String {
+        if !backgroundJobs.isEmpty {
+            return backgroundJobs.suffix(8).map { job in
+                let elapsed = Self.elapsedDescription(from: job.startedAt, to: Date())
+                return "[\(job.kind.rawValue)] \(job.title)；状态=\(job.status)；已运行=\(elapsed)；进度=\(job.summary)"
+            }.joined(separator: "\n")
+        }
+        guard let title = backgroundTaskTitle,
+              let status = backgroundTaskStatus,
+              let startedAt = backgroundTaskStartedAt else { return "当前没有后台任务。" }
+        let statusText: String
+        switch status {
+        case .running: statusText = "执行中"
+        case .stalled: statusText = "可能卡住（不得描述为正常）"
+        case .completed: statusText = "已完成"
+        case .failed: statusText = "失败"
+        }
+        let lastProgress = backgroundTaskLastProgressAt.map { Self.memoryTimestamp(for: $0) } ?? "没有记录"
+        return "任务：\(title)\n状态：\(statusText)\n开始：\(Self.memoryTimestamp(for: startedAt))\n已运行：\(backgroundTaskElapsedDescription)\n最后进度：\(lastProgress)"
+    }
+
+    var backgroundTaskUserSummary: String? {
+        guard let title = backgroundTaskTitle,
+              let status = backgroundTaskStatus,
+              let startedAt = backgroundTaskStartedAt else { return nil }
+        let started = Self.displayTimestamp(for: startedAt)
+        let lastProgress = backgroundTaskLastProgressAt.map { Self.displayTimestamp(for: $0) } ?? "没有记录"
+        switch status {
+        case .running:
+            return "后台任务“\(title)”从\(started)开始，已经运行\(backgroundTaskElapsedDescription)。最后一次进度在\(lastProgress)，目前仍在执行。"
+        case .stalled:
+            return "后台任务“\(title)”从\(started)开始，已经运行\(backgroundTaskElapsedDescription)，并且超过 5 分钟没有新进度，可能已经卡住。你可以让我检查、取消或重新执行，不能再把它当作正常运行。"
+        case .completed:
+            return "后台任务“\(title)”已经完成，总等待时间约\(backgroundTaskElapsedDescription)。"
+        case .failed:
+            return "后台任务“\(title)”执行失败，开始于\(started)，已等待约\(backgroundTaskElapsedDescription)。"
+        }
+    }
+
+    nonisolated static func shouldMarkBackgroundTaskStalled(
+        startedAt: Date?,
+        lastProgressAt: Date?,
+        now: Date,
+        threshold: TimeInterval = 300
+    ) -> Bool {
+        guard let startedAt, let lastProgressAt else { return false }
+        return now.timeIntervalSince(startedAt) >= threshold
+            && now.timeIntervalSince(lastProgressAt) >= threshold
+    }
+
+    nonisolated static func elapsedDescription(from start: Date, to end: Date) -> String {
+        let seconds = max(0, Int(end.timeIntervalSince(start)))
+        if seconds < 60 { return "\(seconds)秒" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)分钟" }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours)小时" : "\(hours)小时\(remainder)分钟"
+    }
+
     func resetToIdle(message: String = "需要我做什么？") {
         replyCollapseTask?.cancel()
         replyCollapseTask = nil
@@ -356,6 +621,7 @@ final class AppState: ObservableObject {
         errorDismissTask = nil
         showPermission = false
         interactionSource = .voice
+        voiceSessionActive = false
         approvalIsListening = false
         approvalHeardText = ""
         approvalID = nil
@@ -371,6 +637,7 @@ final class AppState: ObservableObject {
 
     func beginTextInteraction() {
         interactionSource = .text
+        voiceSessionActive = false
         isExpanded = false
         showHistory = false
     }
@@ -379,7 +646,7 @@ final class AppState: ObservableObject {
         interactionSource = .voice
     }
 
-    func presentNotification(_ message: String, duration: Duration = .seconds(9)) {
+    func presentNotification(_ message: String, duration: Duration = .seconds(9), recordInHistory: Bool = true) {
         replyCollapseTask?.cancel()
         interactionSource = .notification
         showPermission = false
@@ -388,7 +655,7 @@ final class AppState: ObservableObject {
         audioLevel = 0
         transcript = message
         isExpanded = true
-        appendConversation(.action, "系统提醒：\(message)")
+        if recordInHistory { appendConversation(.action, "系统提醒：\(message)") }
         replyCollapseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: duration)
             guard let self, !Task.isCancelled, self.interactionSource == .notification else { return }
@@ -417,9 +684,51 @@ final class AppState: ObservableObject {
     }
 
     func publishMacCareReport(_ report: MacCareReport) {
+        let finding = MacDiagnosticFinding(report: report)
+        let previous = latestMacDiagnosticFindings[report.tool]
+        let shouldRecord = previous == nil
+            || previous?.summary != finding.summary
+            || Date().timeIntervalSince(previous?.detectedAt ?? .distantPast) >= 2 * 60 * 60
         latestMacCareReports[report.tool] = report
         latestMacCareReport = report
+        latestMacDiagnosticFindings[report.tool] = finding
+        latestMacDiagnosticFinding = finding
         macCareReportVersion &+= 1
+        if shouldRecord {
+            recordActionStatus("""
+            检测结论 · \(report.tool.rawValue)：\(finding.summary)
+            风险：\(finding.severity.rawValue)；处理：\(finding.ownership.rawValue)
+            影响：\(finding.impact)
+            """)
+            recordHealthEvent(from: finding, tool: report.tool)
+        }
+        // A successful scan is evidence, not proof that a recommendation was
+        // applied. Only actual tool executions belong in learned experience.
+    }
+
+    func recordOrganizationTransaction(_ moves: [CompletedFileMove]) {
+        lastOrganizationTransaction = moves
+    }
+
+    func clearOrganizationTransaction() {
+        lastOrganizationTransaction = []
+    }
+
+    private func recordHealthEvent(from finding: MacDiagnosticFinding, tool: MacCareTool) {
+        let severity: HealthEvent.Severity = switch finding.severity {
+        case .normal: .normal
+        case .attention: .attention
+        case .warning: .warning
+        }
+        healthEvents.append(.init(
+            category: tool.rawValue,
+            title: finding.summary,
+            evidence: finding.evidence.prefix(3).joined(separator: "；"),
+            severity: severity,
+            resolution: finding.nextStep
+        ))
+        if healthEvents.count > 200 { healthEvents.removeFirst(healthEvents.count - 200) }
+        persistHealthEvents()
     }
 
     var macCareContextPrompt: String {
@@ -434,15 +743,22 @@ final class AppState: ObservableObject {
         }.joined(separator: "\n")
     }
 
-    func conversationContextPrompt(for query: String, includePersistent: Bool = true) -> String {
+    var macDiagnosticContextPrompt: String {
+        guard !latestMacDiagnosticFindings.isEmpty else { return "尚无结构化异常或检测结论。" }
+        return MacCareTool.allCases.compactMap { tool in
+            latestMacDiagnosticFindings[tool].map { "[\(tool.rawValue)]\n\($0.prompt)" }
+        }.joined(separator: "\n\n")
+    }
+
+    func conversationContextPrompt(for query: String, includePersistent: Bool = true, recentLimit: Int = 6) -> String {
         guard !conversation.isEmpty else { return "尚无历史对话。" }
         // Keep the active window focused. Older relevant facts are supplied by
         // the retrieval layer below instead of duplicating a long transcript.
-        let recentCount = 10
+        let recentCount = min(max(recentLimit, 2), 8)
         let recentStart = max(0, conversation.count - recentCount)
         let recent = Array(conversation[recentStart...])
         let relevant = includePersistent
-            ? memorySystem.relevantHistory(for: query, excluding: Set(recent.map(\.id)), limit: 8)
+            ? memorySystem.relevantHistory(for: query, excluding: Set(recent.map(\.id)), limit: 3)
             : []
 
         func render(_ items: [ConversationItem]) -> String {
@@ -455,12 +771,14 @@ final class AppState: ObservableObject {
                 case .error: role = "执行错误"
                 }
                 let compact = item.text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                return "\(role)：\(String(compact.prefix(650)))"
+                return "[\(Self.memoryTimestamp(for: item.createdAt))] \(role)：\(String(compact.prefix(380)))"
             }.joined(separator: "\n")
         }
 
         let relevantText = relevant.isEmpty ? "无额外匹配记录。" : render(relevant)
         return """
+        当前时间：\(Self.memoryTimestamp(for: Date()))；时区：\(TimeZone.current.identifier)。
+
         当前连续对话（按时间顺序，必须承接代词、追问和“继续/去吧/这个/为什么”等短句）：
         \(render(recent))
 
@@ -470,6 +788,42 @@ final class AppState: ObservableObject {
         与当前请求相关的较早记录（仅作为历史，不要误当成刚发生）：
         \(includePersistent ? relevantText : "跨启动工作记忆已关闭，未调用会话归档。")
         """
+    }
+
+    nonisolated static func memoryTimestamp(for date: Date, relativeTo now: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss XXX"
+        let absolute = formatter.string(from: date)
+        let calendar = Calendar.current
+        let relation: String
+        if calendar.isDateInToday(date) {
+            relation = "今天"
+        } else if calendar.isDateInYesterday(date) {
+            relation = "昨天"
+        } else if calendar.isDateInTomorrow(date) {
+            relation = "明天"
+        } else {
+            let days = calendar.dateComponents(
+                [.day],
+                from: calendar.startOfDay(for: date),
+                to: calendar.startOfDay(for: now)
+            ).day ?? 0
+            relation = days > 0 ? "\(days)天前" : (days < 0 ? "\(-days)天后" : "当天")
+        }
+        return "\(absolute) · \(relation)"
+    }
+
+    nonisolated static func displayTimestamp(for date: Date, relativeTo now: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "'今天' HH:mm:ss" : "MM-dd HH:mm:ss"
+        if Calendar.current.isDateInYesterday(date) {
+            formatter.dateFormat = "'昨天' HH:mm:ss"
+        }
+        return formatter.string(from: date)
     }
 
     func contextualizedRequest(_ text: String) -> String {
@@ -513,6 +867,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func persistHealthEvents() {
+        do {
+            try FileManager.default.createDirectory(
+                at: healthEventsURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(healthEvents).write(to: healthEventsURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: healthEventsURL.path)
+        } catch {
+            // A later event retries persistence; the current session remains available.
+        }
+    }
+
     private struct LegacyMessage: Decodable {
         let role: String
         let content: String
@@ -523,10 +890,18 @@ final class AppState: ObservableObject {
         return try? JSONDecoder().decode([ConversationItem].self, from: data)
     }
 
+    private static func loadHealthEvents(from url: URL) -> [HealthEvent] {
+        guard let data = try? Data(contentsOf: url),
+              let events = try? JSONDecoder().decode([HealthEvent].self, from: data) else { return [] }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return Array(events.suffix(200))
+    }
+
     private static func importLegacyModelHistory() -> [ConversationItem] {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FuYu", isDirectory: true)
             .appendingPathComponent("conversation-memory.json")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         guard let data = try? Data(contentsOf: url),
               let messages = try? JSONDecoder().decode([LegacyMessage].self, from: data) else { return [] }
         return messages.suffix(200).map { message in

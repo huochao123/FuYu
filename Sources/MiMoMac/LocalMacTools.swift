@@ -12,6 +12,7 @@ enum LocalMacCommand: Equatable {
     case scan(MacCareTool)
     case volume(Adjustment)
     case brightness(Adjustment)
+    case openApplication(String)
     case applyLatest(MacCareTool)
     case capabilities
 }
@@ -49,6 +50,15 @@ enum LocalCommandRouter {
             if ["调低", "暗一点", "降低"].contains(where: value.contains) { return .brightness(.change(-10)) }
             if value.contains("最高") { return .brightness(.set(100)) }
             if value.contains("最低") { return .brightness(.set(0)) }
+        }
+
+        for prefix in ["帮我打开", "请打开", "打开一下", "打开", "启动", "运行"] where value.hasPrefix(prefix) {
+            let remainder = String(value.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if remainder.contains("会议"), ["开一个", "开个", "创建", "新建", "预约", "安排"].contains(where: remainder.contains) {
+                continue
+            }
+            let name = remainder.split(whereSeparator: { "，,。；;！？!?".contains($0) }).first.map(String.init) ?? remainder
+            if !name.isEmpty, name.count <= 40 { return .openApplication(name) }
         }
 
         let mentionsDownloads = value.contains("下载") && (value.contains("文件夹") || value.contains("目录") || value.contains("东西"))
@@ -95,7 +105,15 @@ struct LocalMacCapabilityManifest {
 
     var prompt: String {
         let tools = MacCareTool.allCases.map(\.rawValue).joined(separator: "、")
+        let process = ProcessInfo.processInfo
+        #if arch(arm64)
+        let architecture = "Apple Silicon / arm64"
+        #else
+        let architecture = "Intel / x86_64"
+        #endif
+        let memory = ByteCountFormatter.string(fromByteCount: Int64(process.physicalMemory), countStyle: .memory)
         return """
+        当前 Mac 画像：macOS \(process.operatingSystemVersionString)；架构 \(architecture)；物理内存 \(memory)；处理器核心 \(process.processorCount)。所有旧经验必须与当前系统版本核对。
         浮屿本机工具：\(tools)。这些检测不经过 Hermes。
         系统控制：音量和静音可直接本机控制；亮度\(brightnessAvailable ? "可直接本机控制" : "当前内置屏幕接口不可用，必须如实说明，不能声称已调整")。
         主动能力：发热进程监控会在连续三次高负载后通知；其余检查只在用户要求时运行。
@@ -159,6 +177,45 @@ actor LocalMacControlService {
         return "已在本机把屏幕亮度调到约 \(clamped)% 。"
     }
 
+    func openApplication(named rawName: String) async throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw LocalMacToolError.applicationNotFound(rawName) }
+        let aliases: [String: String] = [
+            "访达": "com.apple.finder", "finder": "com.apple.finder",
+            "系统设置": "com.apple.systempreferences", "设置": "com.apple.systempreferences",
+            "活动监视器": "com.apple.ActivityMonitor", "日历": "com.apple.iCal",
+            "备忘录": "com.apple.Notes", "音乐": "com.apple.Music",
+            "safari": "com.apple.Safari", "微信": "com.tencent.xinWeChat",
+            "qq": "com.tencent.qq", "腾讯会议": "com.tencent.meeting",
+            "chrome": "com.google.Chrome", "谷歌浏览器": "com.google.Chrome"
+        ]
+        let lowered = name.lowercased()
+        let bundleID = aliases.first(where: { lowered.contains($0.key) })?.value
+        let url = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            ?? Self.installedApplicationURL(named: name)
+        guard let url else { throw LocalMacToolError.applicationNotFound(name) }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        return "已在本机打开 \(url.deletingPathExtension().lastPathComponent)。"
+    }
+
+    private static func installedApplicationURL(named name: String) -> URL? {
+        let manager = FileManager.default
+        let roots = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true),
+            manager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        ]
+        let target = name.lowercased().replacingOccurrences(of: ".app", with: "")
+        return roots.lazy.flatMap { root in
+            (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        }.first { url in
+            url.pathExtension == "app" && url.deletingPathExtension().lastPathComponent.lowercased() == target
+        }
+    }
+
     private static var brightnessExecutable: String? {
         ["/opt/homebrew/bin/brightness", "/usr/local/bin/brightness"].first {
             FileManager.default.isExecutableFile(atPath: $0)
@@ -196,12 +253,14 @@ enum LocalMacToolError: LocalizedError {
     case invalidSystemResponse
     case commandFailed(String)
     case brightnessUnavailable
+    case applicationNotFound(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidSystemResponse: "没有读到可靠的系统状态，因此没有执行。"
         case let .commandFailed(message): "本机控制失败：\(message.trimmingCharacters(in: .whitespacesAndNewlines))"
         case .brightnessUnavailable: "这台 Mac 当前没有可用的屏幕亮度控制接口，我没有假装执行。你仍可用键盘亮度键或系统设置调整。"
+        case let .applicationNotFound(name): "没有找到名为“\(name)”的已安装应用，因此没有执行。"
         }
     }
 }

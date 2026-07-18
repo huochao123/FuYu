@@ -23,6 +23,12 @@ struct OrganizationResult: Sendable {
     let moved: Int
     let skipped: Int
     let failures: [String]
+    let completedMoves: [CompletedFileMove]
+}
+
+struct CompletedFileMove: Sendable {
+    let original: URL
+    let destination: URL
 }
 
 enum MacCareAction: Sendable {
@@ -85,6 +91,102 @@ struct MacCareReport: Sendable {
     }
 }
 
+enum MacDiagnosticSeverity: String, Sendable, Equatable {
+    case normal = "正常"
+    case attention = "需要关注"
+    case warning = "存在风险"
+}
+
+enum MacDiagnosticOwnership: String, Sendable {
+    case noAction = "无需处理"
+    case fuyuDirect = "浮屿可直接处理"
+    case requiresApproval = "浮屿可处理，但需要用户确认"
+    case guidedUserAction = "浮屿可定位并指导，需要用户完成关键操作"
+}
+
+struct MacDiagnosticFinding: Sendable {
+    let detectedAt: Date
+    let source: String
+    let skillID: String
+    let summary: String
+    let evidence: [String]
+    let impact: String
+    let severity: MacDiagnosticSeverity
+    let ownership: MacDiagnosticOwnership
+    let nextStep: String
+
+    init(report: MacCareReport, detectedAt: Date = Date()) {
+        self.detectedAt = detectedAt
+        source = "电脑管家 · \(report.tool.rawValue)（本机真实检测）"
+        skillID = Self.skillID(for: report.tool)
+        summary = report.headline
+        evidence = Array(report.details.prefix(8))
+        impact = Self.impact(for: report.tool)
+        severity = Self.severity(for: report)
+        ownership = Self.ownership(for: report)
+        nextStep = report.recommendations.first.map {
+            "\($0.title)。预期收益：\($0.benefit)；注意：\($0.risk)"
+        } ?? "当前没有需要执行的修复动作，继续监控即可。"
+    }
+
+    var prompt: String {
+        """
+        [检测时间] \(AppState.memoryTimestamp(for: detectedAt))
+        [来源] \(source)
+        [结论] \(summary)
+        [证据] \(evidence.isEmpty ? "无可用明细" : evidence.joined(separator: "；"))
+        [可能影响] \(impact)
+        [风险等级] \(severity.rawValue)
+        [处理归属] \(ownership.rawValue)
+        [下一步] \(nextStep)
+        """
+    }
+
+    private static func skillID(for tool: MacCareTool) -> String {
+        switch tool {
+        case .systemCheck, .optimization, .hotProcesses: "mac-thermal"
+        case .junkScan, .largeFiles, .appLeftovers: "mac-storage"
+        case .organize, .duplicates: "mac-files"
+        case .loginItems: "mac-launchd"
+        }
+    }
+
+    private static func impact(for tool: MacCareTool) -> String {
+        switch tool {
+        case .systemCheck: "可能影响整机响应、可用存储、温度和续航；具体影响必须结合证据判断。"
+        case .junkScan: "主要占用存储空间；通常不是安全危险，但空间过低会影响更新和应用运行。"
+        case .organize: "主要影响文件查找效率；错误移动可能打乱工作路径，因此必须先预览。"
+        case .largeFiles: "可能挤占磁盘并影响系统更新；文件本身不等于危险，需确认用途。"
+        case .duplicates: "主要造成重复占用；误删可能丢失不同用途的副本，因此不能自动删除。"
+        case .loginItems: "过多常驻项目可能拖慢登录、增加内存占用和耗电；未知项目不等于恶意。"
+        case .hotProcesses: "持续高负载可能导致发热、风扇噪声、耗电和卡顿；单次快照不能证明故障。"
+        case .appLeftovers: "可能浪费存储；缓存候选不一定是卸载残留，误删可能导致重新下载或状态丢失。"
+        case .optimization: "可能涉及存储、后台负载和续航；应按建议逐项验证，不能一键盲目修改。"
+        }
+    }
+
+    private static func severity(for report: MacCareReport) -> MacDiagnosticSeverity {
+        let text = ([report.headline] + report.details).joined(separator: " ")
+        if ["严重", "危险", "失败", "不足", "偏紧"].contains(where: text.contains) { return .warning }
+        return report.recommendations.isEmpty ? .normal : .attention
+    }
+
+    private static func ownership(for report: MacCareReport) -> MacDiagnosticOwnership {
+        guard !report.recommendations.isEmpty else { return .noAction }
+        if report.recommendations.contains(where: { recommendation in
+            switch recommendation.action {
+            case .cleanSafe, .organizeDownloads: true
+            default: false
+            }
+        }) { return .requiresApproval }
+        if report.recommendations.allSatisfy({ recommendation in
+            if case .runTool = recommendation.action { return true }
+            return false
+        }) { return .fuyuDirect }
+        return .guidedUserAction
+    }
+}
+
 enum MacCareService {
     private struct FileEntry: Sendable {
         let url: URL
@@ -127,6 +229,7 @@ enum MacCareService {
         var moved = 0
         var skipped = 0
         var failures: [String] = []
+        var completedMoves: [CompletedFileMove] = []
 
         for move in moves {
             if Task.isCancelled { break }
@@ -147,11 +250,40 @@ enum MacCareService {
                 }
                 try manager.moveItem(at: source, to: destination)
                 moved += 1
+                completedMoves.append(.init(original: source, destination: destination))
             } catch {
                 failures.append("\(source.lastPathComponent)：\(error.localizedDescription)")
             }
         }
-        return .init(moved: moved, skipped: skipped, failures: failures)
+        return .init(moved: moved, skipped: skipped, failures: failures, completedMoves: completedMoves)
+    }
+
+    static func undoOrganization(_ moves: [CompletedFileMove], allowedRoot: URL? = nil) -> OrganizationResult {
+        let manager = FileManager.default
+        let root = (allowedRoot ?? manager.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true))
+            .standardizedFileURL
+        var restored = 0
+        var skipped = 0
+        var failures: [String] = []
+        var completed: [CompletedFileMove] = []
+        for move in moves.reversed() {
+            let original = move.original.standardizedFileURL
+            let current = move.destination.standardizedFileURL
+            guard original.path.hasPrefix(root.path + "/"), current.path.hasPrefix(root.path + "/"),
+                  manager.fileExists(atPath: current.path), !manager.fileExists(atPath: original.path) else {
+                skipped += 1
+                continue
+            }
+            do {
+                try manager.createDirectory(at: original.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try manager.moveItem(at: current, to: original)
+                restored += 1
+                completed.append(.init(original: current, destination: original))
+            } catch {
+                failures.append("\(current.lastPathComponent)：\(error.localizedDescription)")
+            }
+        }
+        return .init(moved: restored, skipped: skipped, failures: failures, completedMoves: completed)
     }
 
     private static func systemCheck() throws -> MacCareReport {
@@ -321,7 +453,7 @@ enum MacCareService {
         )]
         return .init(
             tool: .duplicates,
-            headline: "用文件哈希确认 \(duplicateGroups.count) 组重复项，预计可释放 \(format(reclaimable))。",
+            headline: "抽样哈希最多 600 个候选，确认 \(duplicateGroups.count) 组重复项，预计可释放 \(format(reclaimable))。",
             details: details.isEmpty ? ["常用目录中暂未发现明确重复项"] : details,
             recommendations: recommendations
         )
@@ -389,7 +521,7 @@ enum MacCareService {
         )]
         return .init(
             tool: .appLeftovers,
-            headline: "已列出体积最大的应用缓存候选（合计约 \(format(total))），需确认应用来源后才能删除。",
+            headline: "已抽样检查前 60 个应用缓存目录（合计约 \(format(total))），需确认应用来源后才能删除。",
             details: details.isEmpty ? ["没有发现应用缓存目录"] : details,
             recommendations: recommendations
         )
@@ -507,9 +639,37 @@ enum MacCareService {
         process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let text = String(decoding: data, as: UTF8.self)
-        return text.split(separator: "\n").prefix(limit).map { line in
-            line.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/Applications/", with: "")
+        return text.split(separator: "\n").prefix(limit).compactMap { line in
+            let parts = line.split(maxSplits: 3, whereSeparator: \Character.isWhitespace)
+            guard parts.count == 4 else { return nil }
+            let cpu = String(parts[1])
+            let memory = String(parts[2])
+            let path = String(parts[3])
+            let name = friendlyProcessName(path)
+            let note: String
+            if path.contains("WebKit.WebContent") {
+                note = "，通常来自浏览器网页或应用内页面"
+            } else if path.contains("WindowServer") {
+                note = "，负责屏幕窗口显示，连接显示器或大量动画时会升高"
+            } else if path.contains("sysmond") {
+                note = "，macOS 正在读取系统状态"
+            } else {
+                note = ""
+            }
+            return "\(name)：CPU \(cpu)%，内存 \(memory)%\(note)"
         }
+    }
+
+    private static func friendlyProcessName(_ path: String) -> String {
+        if path.contains("WebKit.WebContent") { return "网页内容进程" }
+        if path.contains("WindowServer") { return "窗口显示服务" }
+        if path.contains("sysmond") { return "系统监控服务" }
+        if path.contains("FuYu") || path.contains("浮屿.app") { return "浮屿" }
+        for component in path.split(separator: "/") where component.hasSuffix(".app") {
+            return String(component.dropLast(4))
+        }
+        let last = URL(fileURLWithPath: path).lastPathComponent
+        return last.isEmpty ? path : last
     }
 
     private static func format(_ bytes: Int64) -> String {

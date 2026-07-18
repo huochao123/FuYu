@@ -4,10 +4,11 @@ import SwiftUI
 
 @MainActor
 final class MainAssistantViewState: ObservableObject {
-    enum Section { case conversation, manager }
+    enum Section { case conversation, manager, tasks }
     @Published var draft = ""
     @Published var section: Section = .conversation
     @Published var activeTool: String?
+    @Published var activeTools: Set<String> = []
     @Published var completedTool: String?
     @Published var failedTool: String?
     @Published var toolSummary = ""
@@ -15,6 +16,8 @@ final class MainAssistantViewState: ObservableObject {
     @Published var lastReport: MacCareReport?
     @Published var hoveredManagerTool: String?
     var maintenanceTask: Task<Void, Never>?
+    var maintenanceTasks: [String: Task<Void, Never>] = [:]
+    var maintenanceJobIDs: [String: UUID] = [:]
 }
 
 struct MainAssistantView: View {
@@ -57,7 +60,7 @@ struct MainAssistantView: View {
         .frame(minWidth: 980, minHeight: 650)
         .preferredColorScheme(.dark)
         .onChange(of: state.phase) { _, phase in
-            guard viewState.maintenanceTask == nil else { return }
+            guard viewState.maintenanceTask == nil, viewState.activeTools.isEmpty else { return }
             guard let active = viewState.activeTool else { return }
             if phase == .answered {
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
@@ -177,6 +180,8 @@ struct MainAssistantView: View {
                     .lineLimit(3)
                     .frame(maxWidth: 390)
             }
+
+            assistantFocusStrip
 
             Spacer(minLength: 20)
 
@@ -322,16 +327,91 @@ struct MainAssistantView: View {
         }
     }
 
+    @ViewBuilder
+    private var assistantFocusStrip: some View {
+        let activeJobs = state.backgroundJobs.filter { $0.status == .running || $0.status == .stalled }
+        let latestAttention = state.healthEvents.last(where: { $0.severity != .normal })
+        if let job = activeJobs.last {
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) { viewState.section = .tasks }
+            } label: {
+                HStack(spacing: 10) {
+                    ManagerActivityAnimation(color: job.status == .stalled ? .orange : themeAccent)
+                        .frame(width: 28, height: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(activeJobs.count > 1 ? "\(activeJobs.count) 个任务正在后台运行" : job.title)
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                        Text(job.summary)
+                            .font(.system(size: 8.5, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .frame(width: 292, height: 46)
+                .fuyuLiquidGlass(tint: themeAccent.opacity(0.08), interactive: true,
+                                 in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(MainTapButtonStyle(pressedScale: 0.97))
+            .padding(.top, 12)
+        } else if thermalMonitor.isAlerting || latestAttention != nil {
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    viewState.section = (thermalMonitor.isAlerting || state.latestMacDiagnosticFinding != nil)
+                        ? .manager
+                        : .tasks
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: thermalMonitor.isAlerting ? "flame.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .frame(width: 28, height: 28)
+                        .background(Color.orange.opacity(0.1), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(thermalMonitor.isAlerting ? "发现持续高负载" : "有一项健康建议")
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        Text(thermalMonitor.isAlerting ? thermalMonitor.summary : (latestAttention?.title ?? "打开任务中心查看"))
+                            .font(.system(size: 8.5, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text("查看")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(.orange)
+                }
+                .padding(.horizontal, 12)
+                .frame(width: 292, height: 46)
+                .fuyuLiquidGlass(tint: .orange.opacity(0.08), interactive: true,
+                                 in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(MainTapButtonStyle(pressedScale: 0.97))
+            .padding(.top, 12)
+        }
+    }
+
     private var rightPanel: some View {
         VStack(spacing: 0) {
-            HStack {
-                HStack(spacing: 6) {
+            HStack(spacing: 14) {
+                HStack(spacing: 3) {
                     panelTab("对话", icon: "bubble.left.and.bubble.right.fill", section: .conversation)
                     panelTab("电脑管家", icon: "desktopcomputer.and.macbook", section: .manager)
+                    panelTab("任务", icon: "list.bullet.rectangle.portrait", section: .tasks)
                 }
+                .padding(3)
+                .fuyuLiquidGlass(tint: .white.opacity(0.025), interactive: false,
+                                 in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 Spacer()
+                workspaceStatusPill
                 Button(action: showSettings) {
                     Image(systemName: "ellipsis.circle")
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(MainTapButtonStyle())
                 .foregroundStyle(.secondary)
@@ -343,11 +423,29 @@ struct MainAssistantView: View {
 
             if viewState.section == .conversation {
                 conversationContent
-            } else {
+            } else if viewState.section == .manager {
                 managerContent
+            } else {
+                taskCenterContent
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    private var workspaceStatusPill: some View {
+        let activeCount = state.backgroundJobs.filter { $0.status == .running || $0.status == .stalled }.count
+        return HStack(spacing: 7) {
+            Circle()
+                .fill(thermalMonitor.isAlerting ? Color.orange : Color.mint)
+                .frame(width: 6, height: 6)
+            Text(activeCount > 0 ? "\(activeCount) 个任务运行中" : (thermalMonitor.isAlerting ? "需要关注" : "本机状态正常"))
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.035), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.07)))
     }
 
     private func panelTab(
@@ -360,16 +458,11 @@ struct MainAssistantView: View {
         } label: {
             Label(title, systemImage: icon)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .padding(.horizontal, 11)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .foregroundStyle(viewState.section == section ? .white : .secondary)
                 .background(
                     viewState.section == section ? state.phaseColor.opacity(0.2) : .clear,
-                    in: RoundedRectangle(cornerRadius: 10)
-                )
-                .fuyuLiquidGlass(
-                    tint: viewState.section == section ? state.phaseColor.opacity(0.16) : nil,
-                    interactive: true,
                     in: RoundedRectangle(cornerRadius: 10)
                 )
         }
@@ -394,7 +487,7 @@ struct MainAssistantView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            ForEach(state.conversation) { item in
+                            ForEach(visibleConversationItems) { item in
                                 MainConversationRow(item: item).id(item.id)
                             }
                         }
@@ -431,7 +524,7 @@ struct MainAssistantView: View {
     }
 
     private var managerContent: some View {
-        ScrollView {
+        return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(managerScreenTitle)
@@ -446,6 +539,9 @@ struct MainAssistantView: View {
                 if thermalMonitor.isAlerting {
                     thermalAlertCard
                         .transition(.move(edge: .top).combined(with: .opacity))
+                } else if let finding = state.latestMacDiagnosticFinding,
+                          finding.severity != .normal {
+                    diagnosticInsightCard(finding)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -506,6 +602,284 @@ struct MainAssistantView: View {
         }
     }
 
+    private var taskCenterContent: some View {
+        let activeJobs = state.backgroundJobs.filter { $0.status == .running || $0.status == .stalled }
+        let completedJobs = state.backgroundJobs.filter { $0.status == .completed || $0.status == .failed }
+        let visibleHealthEvents = deduplicatedHealthEvents
+        let todayEvents = visibleHealthEvents.filter { Calendar.current.isDateInToday($0.occurredAt) }
+        let earlierEvents = visibleHealthEvents.filter { !Calendar.current.isDateInToday($0.occurredAt) }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("任务与健康中心")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                        Text("检测可并行，修改安全排队；任务在后台运行时仍可继续对话。")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    HStack(spacing: 8) {
+                        taskSummaryMetric("运行", value: "\(activeJobs.count)", tint: activeJobs.isEmpty ? .mint : .cyan)
+                        taskSummaryMetric("健康事件", value: "\(todayEvents.count)", tint: todayEvents.contains(where: { $0.severity != .normal }) ? .orange : .mint)
+                    }
+                }
+
+                if activeJobs.isEmpty {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundStyle(.mint)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("现在没有运行中的任务")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            Text("检测、整理和跨应用任务会在这里显示实时进度。")
+                                .font(.system(size: 9.5, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(15)
+                    .fuyuLiquidGlass(tint: .mint.opacity(0.07), interactive: false,
+                                     in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                } else {
+                    sectionHeader("正在执行", detail: "\(activeJobs.count) 个任务")
+                    LazyVStack(spacing: 10) {
+                        ForEach(Array(activeJobs.reversed())) { job in
+                            backgroundJobCard(job)
+                        }
+                    }
+                }
+
+                if !completedJobs.isEmpty {
+                    sectionHeader("最近完成", detail: "保留最近结果")
+                    LazyVStack(spacing: 8) {
+                        ForEach(Array(completedJobs.suffix(8).reversed())) { job in
+                            backgroundJobCard(job)
+                        }
+                    }
+                }
+
+                if !visibleHealthEvents.isEmpty {
+                    sectionHeader("健康时间线", detail: "同类事件合并展示 · 原始记录保留在本机")
+                    if !todayEvents.isEmpty {
+                        timelineGroupLabel("今天")
+                        LazyVStack(spacing: 8) {
+                            ForEach(Array(todayEvents.suffix(8).reversed())) { event in
+                                healthEventCard(event)
+                            }
+                        }
+                    }
+                    if !earlierEvents.isEmpty {
+                        timelineGroupLabel("更早")
+                        LazyVStack(spacing: 8) {
+                            ForEach(Array(earlierEvents.suffix(6).reversed())) { event in
+                                healthEventCard(event)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    /// The model retains the complete event history, while the conversation UI
+    /// keeps only the newest diagnostic card for each Mac Care tool. This
+    /// prevents passive monitoring from burying actual dialogue.
+    private var visibleConversationItems: [AppState.ConversationItem] {
+        var newestDiagnosticIDs: Set<UUID> = []
+        var seenDiagnosticKeys: Set<String> = []
+        for item in state.conversation.reversed() where item.kind == .action {
+            guard let key = diagnosticConversationKey(item.text) else { continue }
+            if seenDiagnosticKeys.insert(key).inserted { newestDiagnosticIDs.insert(item.id) }
+        }
+        return state.conversation.filter { item in
+            guard item.kind == .action else { return true }
+            if let _ = diagnosticConversationKey(item.text) {
+                return newestDiagnosticIDs.contains(item.id)
+            }
+            let internalPrefixes = ["浮屿选择本机工具：", "本机执行：", "电脑管家正在", "后台任务进度："]
+            return !internalPrefixes.contains(where: item.text.hasPrefix)
+        }
+    }
+
+    private func diagnosticConversationKey(_ text: String) -> String? {
+        guard text.hasPrefix("检测结论 · ") || text.hasPrefix("系统提醒：检测到") else { return nil }
+        if let colon = text.firstIndex(of: "：") {
+            return String(text[..<colon])
+        }
+        return String(text.prefix(40))
+    }
+
+    /// Repeated monitor samples remain on disk for diagnosis, but one latest
+    /// entry per category is enough for a readable health timeline.
+    private var deduplicatedHealthEvents: [AppState.HealthEvent] {
+        var seen: Set<String> = []
+        let newestFirst = state.healthEvents.reversed().filter { event in
+            seen.insert(event.category).inserted
+        }
+        return Array(newestFirst.reversed())
+    }
+
+    private func taskSummaryMetric(_ title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(tint)
+                .contentTransition(.numericText())
+        }
+        .frame(minWidth: 60, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(tint.opacity(0.12)))
+    }
+
+    private func sectionHeader(_ title: String, detail: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 13, weight: .bold, design: .rounded))
+            Spacer()
+            Text(detail).font(.system(size: 9, design: .rounded)).foregroundStyle(.secondary)
+        }
+        .padding(.top, 3)
+    }
+
+    private func timelineGroupLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundStyle(.secondary)
+            .padding(.leading, 2)
+    }
+
+    private func healthEventCard(_ event: AppState.HealthEvent) -> some View {
+        let tint: Color = switch event.severity {
+        case .normal: .mint
+        case .attention: .orange
+        case .warning: .red
+        }
+        return HStack(alignment: .top, spacing: 10) {
+            Circle().fill(tint).frame(width: 7, height: 7).padding(.top, 5)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(event.category)
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint)
+                    Text(AppState.displayTimestamp(for: event.occurredAt))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Text(event.title)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                if !event.evidence.isEmpty {
+                    Text(event.evidence)
+                        .font(.system(size: 9.5, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Text(event.resolution)
+                    .font(.system(size: 9.5, design: .rounded))
+                    .foregroundStyle(.secondary.opacity(0.9))
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if let tool = MacCareTool(rawValue: event.category),
+               let report = state.latestMacCareReports[tool] {
+                Button("查看") {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        viewState.lastReport = report
+                        viewState.toolSummary = report.headline
+                        viewState.completedTool = tool.rawValue
+                        viewState.section = .manager
+                    }
+                }
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .buttonStyle(MainTapButtonStyle(pressedScale: 0.94))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(tint.opacity(0.08), in: Capsule())
+            }
+        }
+        .padding(11)
+        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(tint.opacity(0.12)))
+    }
+
+    private func backgroundJobCard(_ job: AppState.BackgroundJob) -> some View {
+        let tint: Color = switch job.status {
+        case .running: .cyan
+        case .stalled: .orange
+        case .completed: .mint
+        case .failed: .red
+        }
+        let status: String = switch job.status {
+        case .running: "执行中"
+        case .stalled: "耗时较久"
+        case .completed: "已完成"
+        case .failed: "未完成"
+        }
+        let isActive = job.status == .running || job.status == .stalled
+
+        return HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(tint.opacity(0.14))
+                Image(systemName: isActive ? "waveform.path.ecg" : (job.status == .completed ? "checkmark" : "exclamationmark"))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(tint)
+                    .symbolEffect(.pulse, options: .repeating, value: isActive)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(job.title)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text(job.kind.rawValue)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(tint.opacity(0.1), in: Capsule())
+                }
+                Text(job.summary)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if isActive {
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        Text("\(status) · \(AppState.elapsedDescription(from: job.startedAt, to: timeline.date))")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(tint.opacity(0.9))
+                            .contentTransition(.numericText())
+                    }
+                } else {
+                    Text("\(status) · \(AppState.elapsedDescription(from: job.startedAt, to: job.lastProgressAt))")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(tint.opacity(0.9))
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if isActive {
+                Button("取消") { state.requestCancelBackgroundJob(job.id) }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .buttonStyle(MainTapButtonStyle(pressedScale: 0.94))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .fuyuLiquidGlass(tint: .red.opacity(0.1), interactive: true, in: Capsule())
+            }
+        }
+        .padding(13)
+        .fuyuLiquidGlass(tint: tint.opacity(0.055), interactive: false,
+                         in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
     private var systemDashboard: some View {
         dashboardSurface {
             if state.showPermission {
@@ -543,7 +917,7 @@ struct MainAssistantView: View {
                     .symbolEffect(.pulse, options: .repeating, value: thermalMonitor.isAlerting)
                 Text(thermalMonitor.isAlerting ? "需要关注" : "运行正常")
                     .font(.system(size: 17, weight: .bold, design: .rounded))
-                Text("健康度 \(thermalMonitor.healthScore) · 本机实时")
+                Text("实时状态评分 \(thermalMonitor.healthScore) · 非完整体检")
                     .font(.system(size: 9, design: .rounded))
                     .foregroundStyle(.secondary)
             }
@@ -587,7 +961,11 @@ struct MainAssistantView: View {
             }
             Spacer(minLength: 12)
             Button {
-                viewState.maintenanceTask?.cancel()
+                if let active = viewState.activeTool {
+                    viewState.maintenanceTasks[active]?.cancel()
+                } else {
+                    viewState.maintenanceTask?.cancel()
+                }
             } label: {
                 Label("停止", systemImage: "stop.fill")
             }
@@ -627,21 +1005,24 @@ struct MainAssistantView: View {
     }
 
     private func resultDashboardContent(_ title: String, failed: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let reportNeedsAttention = viewState.lastReport.map { MacDiagnosticFinding(report: $0).severity != .normal } ?? false
+        let needsAttention = failed || reportNeedsAttention
+        let statusColor: Color = failed ? .red : (reportNeedsAttention ? .orange : .green)
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 13) {
                 ZStack {
-                    Circle().fill((failed ? Color.red : Color.green).opacity(0.12))
-                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                    Circle().fill(statusColor.opacity(0.12))
+                    Image(systemName: needsAttention ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
                         .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(failed ? .red : .green)
+                        .foregroundStyle(statusColor)
                         .symbolEffect(.bounce, value: title)
                 }
                 .frame(width: 54, height: 54)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 7) {
-                        Text(failed ? "需要处理" : "检测完成")
+                        Text(failed ? "检测失败" : (reportNeedsAttention ? "发现建议" : "检测完成"))
                             .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundStyle(failed ? .red : .green)
+                            .foregroundStyle(statusColor)
                         if let count = viewState.lastReport?.details.count {
                             Text("\(count) 条明细")
                                 .font(.system(size: 8, weight: .semibold, design: .rounded))
@@ -658,14 +1039,13 @@ struct MainAssistantView: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 10)
-                Button("暂不处理") { resetManagerScreen() }
+                Button("返回总览") { resetManagerScreen() }
                     .buttonStyle(MainGlassActionButtonStyle(tint: themeAccent, prominent: false, height: 30, cornerRadius: 10))
             }
 
             Divider().opacity(0.24)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 9) {
+            LazyVStack(alignment: .leading, spacing: 9) {
                     if let details = viewState.lastReport?.details, !details.isEmpty {
                         Text("检测明细")
                             .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -712,9 +1092,7 @@ struct MainAssistantView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
                     }
-                }
             }
-            .frame(minHeight: 110, maxHeight: 210)
         }
     }
 
@@ -773,7 +1151,11 @@ struct MainAssistantView: View {
 
     private var managerScreenSubtitle: String {
         if state.showPermission { return "请在状态屏中确认或取消，不必切换到聊天界面。" }
-        if viewState.activeTool != nil { return "状态屏会持续显示当前进度；可以随时停止。" }
+        if !viewState.activeTools.isEmpty {
+            return viewState.activeTools.count > 1
+                ? "\(viewState.activeTools.count) 项只读检测并行运行；可以继续对话或分别停止。"
+                : "状态屏会持续显示当前进度；可以随时停止。"
+        }
         if viewState.completedTool != nil || viewState.failedTool != nil { return "结果与后续操作都留在这里，确认后再修改。" }
         return "真实状态与可执行工具分开显示；所有清理和移动都会先预览。"
     }
@@ -824,7 +1206,7 @@ struct MainAssistantView: View {
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                     Spacer()
-                    Text("CPU \(Int(process.cpu))% · 已持续约 \(process.sustainedSamples * 12) 秒")
+                    Text("CPU \(Int(process.cpu))% · 已持续约 \(process.sustainedSamples * ThermalProcessMonitor.sampleIntervalSeconds) 秒")
                         .font(.system(size: 9, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
@@ -836,6 +1218,37 @@ struct MainAssistantView: View {
         .padding(12)
         .background(Color.red.opacity(0.075), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.red.opacity(0.18)))
+    }
+
+    private func diagnosticInsightCard(_ finding: MacDiagnosticFinding) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: finding.severity == .warning ? "exclamationmark.triangle.fill" : "lightbulb.max.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(finding.severity == .warning ? .red : .orange)
+                .frame(width: 38, height: 38)
+                .background((finding.severity == .warning ? Color.red : Color.orange).opacity(0.1), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text("浮屿建议优先看这一项")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(.orange)
+                Text(finding.summary)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                Text(finding.impact)
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Text(finding.ownership.rawValue)
+                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 110, alignment: .trailing)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.orange.opacity(0.14)))
     }
 
     private func managerSectionTitle(_ title: String, detail: String) -> some View {
@@ -862,7 +1275,7 @@ struct MainAssistantView: View {
                 ManagerToolGlyph(
                     icon: icon,
                     tint: tint,
-                    active: viewState.activeTool == title,
+                    active: viewState.activeTools.contains(title),
                     completed: viewState.completedTool == title
                 )
                 .frame(width: 38, height: 38)
@@ -911,7 +1324,7 @@ struct MainAssistantView: View {
                 viewState.hoveredManagerTool = hovering ? title : (viewState.hoveredManagerTool == title ? nil : viewState.hoveredManagerTool)
             }
         }
-        .help(viewState.activeTool == title ? "点击停止当前检测" : "点击整张卡片开始\(title)")
+        .help(viewState.activeTools.contains(title) ? "点击停止当前检测" : "点击整张卡片开始\(title)")
     }
 
     private func compactManagerButton(_ title: String, icon: String, tint: Color, prompt: String) -> some View {
@@ -923,7 +1336,7 @@ struct MainAssistantView: View {
                 ManagerToolGlyph(
                     icon: icon,
                     tint: tint,
-                    active: viewState.activeTool == title,
+                    active: viewState.activeTools.contains(title),
                     completed: viewState.completedTool == title
                 )
                 .frame(width: 30, height: 30)
@@ -968,7 +1381,7 @@ struct MainAssistantView: View {
                 viewState.hoveredManagerTool = hovering ? title : (viewState.hoveredManagerTool == title ? nil : viewState.hoveredManagerTool)
             }
         }
-        .help(viewState.activeTool == title ? "点击停止当前检测" : "点击整张卡片开始\(title)")
+        .help(viewState.activeTools.contains(title) ? "点击停止当前检测" : "点击整张卡片开始\(title)")
     }
 
     private func toolSubtitle(_ title: String) -> String {
@@ -994,14 +1407,9 @@ struct MainAssistantView: View {
     }
 
     private func beginManagerTool(_ title: String, prompt: String) {
-        if viewState.activeTool == title {
-            viewState.maintenanceTask?.cancel()
+        if viewState.activeTools.contains(title) {
+            viewState.maintenanceTasks[title]?.cancel()
             state.recordActionStatus("电脑管家正在停止：\(title)")
-            return
-        }
-        if let active = viewState.activeTool {
-            viewState.toolSummary = "“\(active)”正在检测。可点击正在运行的卡片停止，再启动“\(title)”。"
-            state.recordActionStatus("电脑管家 · \(active)仍在运行，请先停止后再启动\(title)")
             return
         }
         guard let tool = MacCareTool(rawValue: title) else {
@@ -1009,16 +1417,23 @@ struct MainAssistantView: View {
             return
         }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
+            viewState.activeTools.insert(title)
             viewState.activeTool = title
             viewState.completedTool = nil
             viewState.failedTool = nil
-            viewState.toolSummary = "正在直接读取本机数据；点击正在运行的卡片可以随时停止。"
+            viewState.toolSummary = viewState.activeTools.count > 1
+                ? "已有 \(viewState.activeTools.count) 项只读检测并行运行；可以继续对话或单独停止。"
+                : "正在直接读取本机数据；点击正在运行的卡片可以随时停止。"
             viewState.actionFeedback = ""
             viewState.lastReport = nil
         }
         state.activitySource = "电脑管家 · \(title)"
         state.recordActionStatus("电脑管家正在本机扫描：\(title)（不经过 Hermes）")
-        viewState.maintenanceTask = Task { @MainActor in
+        let jobID = state.beginBackgroundJob(title, kind: .readOnly) { [weak viewState] in
+            viewState?.maintenanceTasks[title]?.cancel()
+        }
+        viewState.maintenanceJobIDs[title] = jobID
+        viewState.maintenanceTasks[title] = Task { @MainActor in
             do {
                 let report = try await Task.detached(priority: .userInitiated) {
                     try await MacCareService.run(tool)
@@ -1026,33 +1441,38 @@ struct MainAssistantView: View {
                 guard !Task.isCancelled else { return }
                 state.publishMacCareReport(report)
                 state.recordActionStatus(report.displayText)
+                state.finishBackgroundJob(jobID, summary: report.headline)
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
                     viewState.toolSummary = report.headline
                     viewState.lastReport = report
                     viewState.completedTool = title
                     viewState.failedTool = nil
-                    viewState.activeTool = nil
+                    if viewState.activeTool == title { viewState.activeTool = viewState.activeTools.first(where: { $0 != title }) }
                 }
             } catch is CancellationError {
                 state.recordActionStatus("电脑管家已停止：\(title)", failed: true)
-                viewState.activeTool = nil
+                state.finishBackgroundJob(jobID, summary: "已由用户停止", failed: true)
+                if viewState.activeTool == title { viewState.activeTool = viewState.activeTools.first(where: { $0 != title }) }
             } catch {
                 state.recordActionStatus("电脑管家本机扫描失败：\(error.localizedDescription)", failed: true)
+                state.finishBackgroundJob(jobID, summary: error.localizedDescription, failed: true)
                 withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
                     viewState.toolSummary = error.localizedDescription
                     viewState.failedTool = title
                     viewState.completedTool = nil
-                    viewState.activeTool = nil
+                    if viewState.activeTool == title { viewState.activeTool = viewState.activeTools.first(where: { $0 != title }) }
                 }
             }
-            viewState.maintenanceTask = nil
-            state.activitySource = "本机"
+            viewState.activeTools.remove(title)
+            viewState.maintenanceTasks[title] = nil
+            viewState.maintenanceJobIDs[title] = nil
+            if viewState.activeTools.isEmpty { state.activitySource = "本机" }
         }
     }
 
     @ViewBuilder
     private func managerStatus(title: String, idle: String, tint: Color) -> some View {
-        if viewState.activeTool == title {
+        if viewState.activeTools.contains(title) {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini).tint(tint)
                 Text("点击停止")
@@ -1061,10 +1481,6 @@ struct MainAssistantView: View {
             .foregroundStyle(tint)
             .padding(.horizontal, 7).padding(.vertical, 4)
             .background(tint.opacity(0.12), in: Capsule())
-        } else if viewState.activeTool != nil {
-            Label("请稍候", systemImage: "lock.fill")
-                .font(.system(size: 8.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
         } else if viewState.completedTool == title {
             Label("已完成", systemImage: "checkmark")
                 .font(.system(size: 8.5, weight: .semibold, design: .rounded))
@@ -1084,14 +1500,12 @@ struct MainAssistantView: View {
 
     @ViewBuilder
     private func compactStatus(_ title: String) -> some View {
-        if viewState.activeTool == title {
+        if viewState.activeTools.contains(title) {
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
                 Text("停止")
             }
             .font(.system(size: 8, weight: .semibold, design: .rounded))
-        } else if viewState.activeTool != nil {
-            Image(systemName: "lock.fill").foregroundStyle(.tertiary)
         } else if viewState.completedTool == title {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         } else if viewState.failedTool == title {
@@ -1150,6 +1564,15 @@ struct MainAssistantView: View {
                     Label("移到废纸篓", systemImage: "trash")
                 }
                 .buttonStyle(MainGlassActionButtonStyle(tint: .mint, prominent: true))
+            } else if !failed,
+                      title == MacCareTool.organize.rawValue,
+                      !state.lastOrganizationTransaction.isEmpty {
+                Button {
+                    undoLastOrganization()
+                } label: {
+                    Label("撤回整理", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(MainGlassActionButtonStyle(tint: .orange, prominent: true))
             }
         }
         .padding(11)
@@ -1203,6 +1626,7 @@ struct MainAssistantView: View {
                 MacCareService.organizeDownloads(moves)
             }.value
             guard !Task.isCancelled else { return }
+            state.recordOrganizationTransaction(result.completedMoves)
             let summary = "已整理 \(result.moved) 个文件，跳过 \(result.skipped) 个"
             var details = ["成功移动：\(result.moved) 个", "因同名或位置变化跳过：\(result.skipped) 个"]
             details.append(contentsOf: result.failures.prefix(20).map { "失败：\($0)" })
@@ -1215,6 +1639,38 @@ struct MainAssistantView: View {
                 viewState.completedTool = MacCareTool.organize.rawValue
                 viewState.activeTool = nil
                 viewState.actionFeedback = "整理已执行并验证；没有覆盖或删除文件。"
+            }
+            viewState.maintenanceTask = nil
+        }
+    }
+
+    private func undoLastOrganization() {
+        let transaction = state.lastOrganizationTransaction
+        guard !transaction.isEmpty else { return }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+            viewState.activeTool = MacCareTool.organize.rawValue
+            viewState.completedTool = nil
+            viewState.toolSummary = "正在撤回上一次智能整理…"
+        }
+        viewState.maintenanceTask = Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                MacCareService.undoOrganization(transaction)
+            }.value
+            guard !Task.isCancelled else { return }
+            let report = MacCareReport(
+                tool: .organize,
+                headline: "已恢复 \(result.moved) 个文件，跳过 \(result.skipped) 个",
+                details: ["文件已移回整理前的位置", "没有覆盖同名文件"] + result.failures.prefix(20).map { "失败：\($0)" }
+            )
+            state.clearOrganizationTransaction()
+            state.publishMacCareReport(report)
+            state.recordActionStatus("电脑管家 · 撤回整理\n\(report.displayText)")
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+                viewState.toolSummary = report.headline
+                viewState.lastReport = report
+                viewState.completedTool = MacCareTool.organize.rawValue
+                viewState.activeTool = nil
+                viewState.actionFeedback = "撤回已执行并验证。"
             }
             viewState.maintenanceTask = nil
         }
@@ -1338,8 +1794,19 @@ private struct ManagerToolGlyph: View {
     let completed: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: active ? 1 / 24 : 1 / 10)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
+        Group {
+            if active {
+                TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+                    glyph(time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                glyph(time: 0)
+            }
+        }
+        .shadow(color: active ? tint.opacity(0.35) : .clear, radius: active ? 7 : 0)
+    }
+
+    private func glyph(time: TimeInterval) -> some View {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(tint.opacity(active ? 0.2 : 0.12))
@@ -1355,8 +1822,6 @@ private struct ManagerToolGlyph: View {
                     .foregroundStyle(completed ? .green : tint)
                     .scaleEffect(active ? 0.9 + CGFloat((sin(time * 5) + 1) * 0.06) : 1)
             }
-        }
-        .shadow(color: active ? tint.opacity(0.35) : .clear, radius: active ? 7 : 0)
     }
 }
 
@@ -1411,9 +1876,15 @@ private struct MainConversationRow: View {
         HStack(alignment: .bottom) {
             if item.kind == .user { Spacer(minLength: 54) }
             VStack(alignment: .leading, spacing: 5) {
-                Text(label)
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(tint)
+                HStack(spacing: 8) {
+                    Text(label)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint)
+                    Spacer(minLength: 8)
+                    Text(AppState.displayTimestamp(for: item.createdAt))
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.36))
+                }
                 Text(item.text)
                     .font(.system(size: 12, design: .rounded))
                     .foregroundStyle(.white.opacity(0.86))
@@ -1430,7 +1901,7 @@ private struct MainConversationRow: View {
     private var tint: Color {
         switch item.kind {
         case .user: .cyan
-        case .assistant: .purple
+        case .assistant: Color(red: 0.22, green: 0.72, blue: 0.78)
         case .action: .mint
         case .error: .red
         }
@@ -1452,12 +1923,26 @@ private struct ReactiveVoiceField: View {
     let audioLevel: Double
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            Canvas { context, size in
-                draw(context: &context, size: size, time: timeline.date.timeIntervalSinceReferenceDate)
+        Group {
+            if isAnimating {
+                TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+                    field(time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                field(time: 0)
             }
         }
         .drawingGroup()
+    }
+
+    private var isAnimating: Bool {
+        phase == .listening || phase == .thinking || phase == .executing || phase == .speaking
+    }
+
+    private func field(time: TimeInterval) -> some View {
+            Canvas { context, size in
+                draw(context: &context, size: size, time: time)
+            }
     }
 
     private func draw(context: inout GraphicsContext, size: CGSize, time: TimeInterval) {

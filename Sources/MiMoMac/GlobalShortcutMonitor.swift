@@ -11,14 +11,19 @@ final class GlobalShortcutMonitor {
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var isPressed = false
+    private var isFunctionKeyDown = false
+    private var functionHoldTask: Task<Void, Never>?
+    private let functionHoldDelayMilliseconds: Int
     private(set) var shortcutLabel: String
 
     init(
         shortcut: PushToTalkShortcut,
+        functionHoldDelayMilliseconds: Int = 320,
         onPress: @escaping () -> Void,
         onRelease: @escaping () -> Void
     ) {
         self.shortcut = shortcut
+        self.functionHoldDelayMilliseconds = max(0, functionHoldDelayMilliseconds)
         self.shortcutLabel = shortcut.title
         self.onPress = onPress
         self.onRelease = onRelease
@@ -46,6 +51,8 @@ final class GlobalShortcutMonitor {
     }
 
     func stop() {
+        functionHoldTask?.cancel()
+        functionHoldTask = nil
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
         if let handlerRef { RemoveEventHandler(handlerRef) }
         if let globalFlagsMonitor { NSEvent.removeMonitor(globalFlagsMonitor) }
@@ -56,6 +63,7 @@ final class GlobalShortcutMonitor {
         localFlagsMonitor = nil
         if isPressed { onRelease() }
         isPressed = false
+        isFunctionKeyDown = false
     }
 
     fileprivate func handleHotKey(kind: UInt32) {
@@ -70,13 +78,34 @@ final class GlobalShortcutMonitor {
 
     func handleFunctionFlags(_ flags: NSEvent.ModifierFlags) {
         let pressed = flags.contains(.function)
-        if pressed, !isPressed {
-            isPressed = true
-            onPress()
-        } else if !pressed, isPressed {
-            isPressed = false
-            onRelease()
+        if pressed, !isFunctionKeyDown {
+            isFunctionKeyDown = true
+            functionHoldTask?.cancel()
+            if functionHoldDelayMilliseconds == 0 {
+                activateFunctionShortcutIfStillHeld()
+            } else {
+                functionHoldTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(for: .milliseconds(self.functionHoldDelayMilliseconds))
+                    guard !Task.isCancelled else { return }
+                    self.activateFunctionShortcutIfStillHeld()
+                }
+            }
+        } else if !pressed, isFunctionKeyDown {
+            isFunctionKeyDown = false
+            functionHoldTask?.cancel()
+            functionHoldTask = nil
+            if isPressed {
+                isPressed = false
+                onRelease()
+            }
         }
+    }
+
+    private func activateFunctionShortcutIfStillHeld() {
+        guard isFunctionKeyDown, !isPressed else { return }
+        isPressed = true
+        onPress()
     }
 
     private func installFunctionKeyMonitors() {

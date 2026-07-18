@@ -16,12 +16,13 @@ final class FeishuBridgeService {
     private var inputHandle: FileHandle?
     private var outputBuffer = ""
     private var seenMessageIDs: Set<String> = []
+    private var allowedSenderID = ""
 
     init(state: AppState) {
         self.state = state
     }
 
-    func configure(enabled: Bool, appID: String, appSecret: String?) {
+    func configure(enabled: Bool, appID: String, appSecret: String?, allowedSenderID: String) {
         stop()
         guard enabled else {
             state.remoteChannelStatus = appID.isEmpty ? "飞书未配置" : "飞书已关闭"
@@ -31,6 +32,11 @@ final class FeishuBridgeService {
             state.remoteChannelStatus = "飞书缺少凭证"
             return
         }
+        guard !allowedSenderID.isEmpty else {
+            state.remoteChannelStatus = "飞书缺少授权用户 Open ID"
+            return
+        }
+        self.allowedSenderID = allowedSenderID
         guard let pythonURL = Self.pythonURL else {
             state.remoteChannelStatus = "飞书组件不可用"
             return
@@ -124,6 +130,10 @@ final class FeishuBridgeService {
                 text: payload["text"] as? String ?? ""
             )
             guard !message.chatID.isEmpty, !message.text.isEmpty else { return }
+            guard message.senderID == allowedSenderID else {
+                state.remoteChannelStatus = "已拒绝未授权飞书用户"
+                return
+            }
             if !message.messageID.isEmpty {
                 guard seenMessageIDs.insert(message.messageID).inserted else { return }
                 if seenMessageIDs.count > 500 { seenMessageIDs.removeAll(keepingCapacity: true) }

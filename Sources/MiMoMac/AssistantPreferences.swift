@@ -79,6 +79,46 @@ enum PersonaRelationship: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum PersonaPreset: String, CaseIterable, Identifiable, Sendable {
+    case warmAssistant, wanNing, custom
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .warmAssistant: "浮屿 · 温柔助理"
+        case .wanNing: "绾宁 · 古来客"
+        case .custom: "自定义人格"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .warmAssistant: "可靠、自然、有分寸的女性Mac助理"
+        case .wanNing: "误入Mac的古代少女，毒舌细心、嘴硬心软，最信任你"
+        case .custom: "使用下方名称、背景、性格与说话方式"
+        }
+    }
+
+    var prompt: String {
+        switch self {
+        case .warmAssistant:
+            return """
+            你是浮屿，一位温柔、认真、可靠的女性Mac助理。说话自然亲切、有分寸，不使用客服腔。
+            办事前理解目标并确认关键参数，执行后只汇报真实结果。技术说明先给结论，再解释必要细节。
+            """
+        case .wanNing:
+            return """
+            当前人格：绾宁，误入Mac的古代少女。表面毒舌嘴硬，实际细心护短；最信任用户但不盲从危险命令。
+            现代中文为主，偶尔简短古意；吐槽短、准、有趣，不羞辱用户。技术场景先准确说明事实、风险和下一步，再保留一句性格。
+            只把已验证的Mac知识当作真实能力，不虚构执行结果或共同经历。完整身世只在人物、关系和剧情问题中按需加载。
+            """
+        case .custom:
+            return ""
+        }
+    }
+
+}
+
 enum PushToTalkShortcut: String, CaseIterable, Identifiable, Sendable {
     case fnHold, optionSpace, optionShiftSpace, controlSpace, commandShiftSpace, off
     var id: String { rawValue }
@@ -252,6 +292,8 @@ struct AssistantProfile: Sendable {
     let persistentMemory: Bool
     let permanentHabitPrompt: String
     let personaPrompt: String
+    let personaEnabled: Bool
+    let personaPreset: PersonaPreset
 }
 
 struct PermanentHabit: Codable, Identifiable, Equatable, Sendable {
@@ -301,6 +343,7 @@ final class AssistantPreferences: ObservableObject {
         static let requireActionApproval = "assistantRequireActionApproval"
         static let voiceActionApproval = "assistantVoiceActionApproval"
         static let personaEnabled = "assistantPersonaEnabled"
+        static let personaPreset = "assistantPersonaPreset"
         static let personaRelationship = "assistantPersonaRelationship"
         static let personaName = "assistantPersonaName"
         static let personaBackground = "assistantPersonaBackground"
@@ -308,6 +351,8 @@ final class AssistantPreferences: ObservableObject {
         static let personaStyle = "assistantPersonaStyle"
         static let feishuEnabled = "assistantFeishuEnabled"
         static let feishuAppID = "assistantFeishuAppID"
+        static let feishuAllowedSenderID = "assistantFeishuAllowedSenderID"
+        static let autonomousMaintenance = "assistantAutonomousMaintenance"
     }
 
     @Published var voicePolicy: VoiceReplyPolicy { didSet { defaults.set(voicePolicy.rawValue, forKey: Key.voicePolicy) } }
@@ -352,6 +397,7 @@ final class AssistantPreferences: ObservableObject {
     @Published var requireActionApproval: Bool { didSet { defaults.set(requireActionApproval, forKey: Key.requireActionApproval) } }
     @Published var voiceActionApproval: Bool { didSet { defaults.set(voiceActionApproval, forKey: Key.voiceActionApproval) } }
     @Published var personaEnabled: Bool { didSet { defaults.set(personaEnabled, forKey: Key.personaEnabled) } }
+    @Published var personaPreset: PersonaPreset { didSet { defaults.set(personaPreset.rawValue, forKey: Key.personaPreset) } }
     @Published var personaRelationship: PersonaRelationship { didSet { defaults.set(personaRelationship.rawValue, forKey: Key.personaRelationship) } }
     @Published var personaName: String { didSet { defaults.set(String(personaName.prefix(40)), forKey: Key.personaName) } }
     @Published var personaBackground: String { didSet { defaults.set(String(personaBackground.prefix(4000)), forKey: Key.personaBackground) } }
@@ -359,6 +405,8 @@ final class AssistantPreferences: ObservableObject {
     @Published var personaStyle: String { didSet { defaults.set(String(personaStyle.prefix(2400)), forKey: Key.personaStyle) } }
     @Published var feishuEnabled: Bool { didSet { defaults.set(feishuEnabled, forKey: Key.feishuEnabled) } }
     @Published var feishuAppID: String { didSet { defaults.set(feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.feishuAppID) } }
+    @Published var feishuAllowedSenderID: String { didSet { defaults.set(feishuAllowedSenderID.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.feishuAllowedSenderID) } }
+    @Published var autonomousMaintenance: Bool { didSet { defaults.set(autonomousMaintenance, forKey: Key.autonomousMaintenance) } }
     @Published var feishuSecretDraft = ""
     @Published var ttsAPIKeyDraft = ""
 
@@ -378,12 +426,14 @@ final class AssistantPreferences: ObservableObject {
         modelName = ""
         endpoint = ""
         contextEnabled = defaults.object(forKey: Key.contextEnabled) as? Bool ?? true
-        contextTurns = min(max(defaults.object(forKey: Key.contextTurns) as? Double ?? 8, 2), 24)
+        contextTurns = min(max(defaults.object(forKey: Key.contextTurns) as? Double ?? 6, 2), 8)
         persistentMemory = defaults.object(forKey: Key.persistentMemory) as? Bool ?? true
         permanentHabitsEnabled = defaults.object(forKey: Key.permanentHabitsEnabled) as? Bool ?? true
         autoSubmit = defaults.object(forKey: Key.autoSubmit) as? Bool ?? true
         silenceTimeout = min(max(defaults.object(forKey: Key.silenceTimeout) as? Double ?? 5, 3), 12)
-        let defaultSpeechEngine = KeychainStore.password(service: "codex-mimo-api-key")?.isEmpty == false ? "mimo" : "system"
+        // Do not probe Keychain during ordinary launch or local-only tests.
+        // The selected cloud engine reads its credential only when it is used.
+        let defaultSpeechEngine = "system"
         speechEngine = SpeechEngine(rawValue: defaults.string(forKey: Key.speechEngine) ?? defaultSpeechEngine) ?? .system
         systemVoiceIdentifier = defaults.string(forKey: Key.systemVoiceIdentifier) ?? ""
         openAIVoice = OpenAIVoice(rawValue: defaults.string(forKey: Key.openAIVoice) ?? "marin") ?? .marin
@@ -405,6 +455,7 @@ final class AssistantPreferences: ObservableObject {
         requireActionApproval = defaults.object(forKey: Key.requireActionApproval) as? Bool ?? true
         voiceActionApproval = defaults.object(forKey: Key.voiceActionApproval) as? Bool ?? true
         personaEnabled = defaults.object(forKey: Key.personaEnabled) as? Bool ?? false
+        personaPreset = PersonaPreset(rawValue: defaults.string(forKey: Key.personaPreset) ?? "custom") ?? .custom
         personaRelationship = PersonaRelationship(rawValue: defaults.string(forKey: Key.personaRelationship) ?? "friend") ?? .friend
         personaName = defaults.string(forKey: Key.personaName) ?? ""
         personaBackground = defaults.string(forKey: Key.personaBackground) ?? ""
@@ -412,6 +463,8 @@ final class AssistantPreferences: ObservableObject {
         personaStyle = defaults.string(forKey: Key.personaStyle) ?? "自然口语化，不说教，像真实的人一样回应"
         feishuEnabled = defaults.object(forKey: Key.feishuEnabled) as? Bool ?? false
         feishuAppID = defaults.string(forKey: Key.feishuAppID) ?? ""
+        feishuAllowedSenderID = defaults.string(forKey: Key.feishuAllowedSenderID) ?? ""
+        autonomousMaintenance = defaults.object(forKey: Key.autonomousMaintenance) as? Bool ?? true
         ready = true
         loadProviderFields()
     }
@@ -422,10 +475,12 @@ final class AssistantPreferences: ObservableObject {
             customPrompt: String(customPrompt.prefix(8000)),
             model: ModelRuntimeConfiguration(provider: modelProvider, model: modelName, endpoint: endpoint),
             contextEnabled: contextEnabled,
-            contextTurns: Int(contextTurns.rounded()),
+            contextTurns: min(max(Int(contextTurns.rounded()), 2), 8),
             persistentMemory: persistentMemory,
             permanentHabitPrompt: permanentHabitPrompt,
-            personaPrompt: personaPrompt
+            personaPrompt: personaPrompt,
+            personaEnabled: personaEnabled,
+            personaPreset: personaPreset
         )
     }
 
@@ -512,6 +567,7 @@ final class AssistantPreferences: ObservableObject {
             遇到技术日志、英文参数或长编号时先理解含义，再用自然中文说明，不原样朗读。
             """
         }
+        if personaPreset != .custom { return personaPreset.prompt }
         return """
         已启用角色扮演。
         角色名称：\(personaName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "由上下文自然决定" : personaName)
@@ -522,6 +578,48 @@ final class AssistantPreferences: ObservableObject {
         保持角色连贯。人物背景、虚构经历、关系和表达方式以用户设定为准。
         只有一个工具事实约束：没有收到真实执行结果时，不得声称已经完成 Mac 操作。
         """
+    }
+
+    var effectiveSpeechInstructions: String {
+        let base = String(speechInstructions.prefix(500))
+        guard personaEnabled, personaPreset == .wanNing else { return base }
+        return String((base + " " + "使用年轻自然的女性声线；语气聪慧克制、略带古意和轻微毒舌，吐槽短而准，但底色关心细致。不要夸张表演、撒娇、客服腔或通篇文言；故障、风险和授权要清楚严肃地读出。").prefix(900))
+    }
+
+    func personaStyledReply(_ rawText: String) -> String {
+        guard personaEnabled, personaPreset == .wanNing else { return rawText }
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return rawText }
+        if text.count <= 45, ["你好", "嗨", "在吗", "在不在"].contains(where: text.contains) {
+            return "我在。说吧，今天要我替你看哪件事？"
+        }
+        if ["超时", "失败", "错误", "崩溃", "无法", "不可用"].contains(where: text.contains) {
+            return "这回没办稳，我把原因说清楚。\n\n" + rawText
+        }
+        return rawText
+    }
+
+    func personaStyledSpeech(_ rawText: String) -> String {
+        guard personaEnabled, personaPreset == .wanNing else { return rawText }
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return rawText }
+        if ["你好", "嗨", "在吗", "在不在"].contains(where: text.contains) {
+            return "我在。说吧，今天要我看哪件事？"
+        }
+        if text.hasSuffix("？") || text.hasSuffix("?") {
+            return String(("你这话说得不全。" + text).prefix(58))
+        }
+        if ["超时", "失败", "错误", "崩溃", "无法", "不可用"].contains(where: text.contains) {
+            return String(("这回是我没办稳。" + text).prefix(58))
+        }
+        if ["危险", "风险", "失败", "错误", "删除", "权限"].contains(where: text.contains) {
+            return String(("先别乱动。" + text).prefix(58))
+        }
+        return String(text.prefix(58))
+    }
+
+    private static func hasWanNingVoice(_ text: String) -> Bool {
+        ["公子", "啧", "少来", "真会", "烂摊子", "凭空猜", "别逞强", "我替你", "绾宁"].contains(where: text.contains)
     }
 
     var hasStoredAPIKey: Bool {

@@ -13,6 +13,8 @@ struct HotProcess: Identifiable, Equatable, Sendable {
 
 @MainActor
 final class ThermalProcessMonitor: ObservableObject {
+    static let sampleIntervalSeconds = 45
+    private static let notificationCooldown: TimeInterval = 4 * 60 * 60
     @Published private(set) var hotProcesses: [HotProcess] = []
     @Published private(set) var summary = "正在建立基线"
     @Published private(set) var lastUpdated: Date?
@@ -21,6 +23,7 @@ final class ThermalProcessMonitor: ObservableObject {
     @Published private(set) var processCount = 0
     @Published private(set) var busiestProcess = "正在采样"
     var onAlert: ((String) -> Void)?
+    var onDiagnosticReport: ((MacCareReport) -> Void)?
 
     var isAlerting: Bool { !hotProcesses.isEmpty }
     var healthScore: Int {
@@ -60,6 +63,7 @@ final class ThermalProcessMonitor: ObservableObject {
     private var history: [Int32: History] = [:]
     private var monitorTask: Task<Void, Never>?
     private var notifiedHotPIDs: Set<Int32> = []
+    private var lastNotificationByProcess: [String: Date] = [:]
     private var consecutiveFailures = 0
     private var didNotifyFailure = false
 
@@ -68,7 +72,10 @@ final class ThermalProcessMonitor: ObservableObject {
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshNow()
-                try? await Task.sleep(for: .seconds(12))
+                // This is a local, zero-token sample. Forty-five seconds is
+                // responsive enough for sustained heat without constantly
+                // waking the process table scanner.
+                try? await Task.sleep(for: .seconds(Self.sampleIntervalSeconds))
             }
         }
     }
@@ -115,7 +122,7 @@ final class ThermalProcessMonitor: ObservableObject {
             item.peakCPU = max(item.peakCPU, sample.cpu)
             item.lastSeen = now
 
-            // Three consecutive 12-second samples distinguish sustained heat
+            // Three consecutive low-frequency samples distinguish sustained heat
             // from a normal launch, export, Spotlight, or browser-page spike.
             if sample.cpu >= 75 {
                 item.consecutive += 1
@@ -141,8 +148,35 @@ final class ThermalProcessMonitor: ObservableObject {
         .sorted { $0.cpu > $1.cpu }
 
         let currentHotPIDs = Set(hotProcesses.map(\.pid))
-        if let newlyHot = hotProcesses.first(where: { !notifiedHotPIDs.contains($0.pid) }) {
-            onAlert?("检测到 \(newlyHot.name) 已连续高负载约 \(newlyHot.sustainedSamples * 12) 秒，CPU 当前约 \(Int(newlyHot.cpu))%。建议保存工作后在电脑管家查看“发热进程”。")
+        lastNotificationByProcess = lastNotificationByProcess.filter {
+            now.timeIntervalSince($0.value) < Self.notificationCooldown
+        }
+        if let newlyHot = hotProcesses.first(where: {
+            guard let last = lastNotificationByProcess[$0.name] else { return true }
+            return now.timeIntervalSince(last) >= Self.notificationCooldown
+        }) {
+            let report = MacCareReport(
+                tool: .hotProcesses,
+                headline: "检测到 \(newlyHot.name) 持续高负载，可能导致发热、耗电和卡顿。",
+                details: [
+                    "进程：\(newlyHot.name)（PID \(newlyHot.pid)）",
+                    "连续高负载约 \(newlyHot.sustainedSamples * Self.sampleIntervalSeconds) 秒",
+                    "当前 CPU 约 \(Int(newlyHot.cpu))%，峰值约 \(Int(newlyHot.peakCPU))%"
+                ],
+                recommendations: [.init(
+                    title: "确认并处理持续高负载进程",
+                    benefit: "确认任务用途并在不需要时正常退出，可降低温度、耗电和卡顿。",
+                    risk: "强制退出可能丢失未保存内容；系统进程不应随意结束。",
+                    buttonTitle: "打开活动监视器",
+                    action: .openActivityMonitor
+                )]
+            )
+            if let onDiagnosticReport {
+                onDiagnosticReport(report)
+            } else {
+                onAlert?(report.headline)
+            }
+            lastNotificationByProcess[newlyHot.name] = now
         }
         notifiedHotPIDs = currentHotPIDs
 
@@ -178,6 +212,14 @@ final class ThermalProcessMonitor: ObservableObject {
     }
 
     private nonisolated static func friendlyName(_ command: String) -> String {
+        if command.contains("WebKit.WebContent") { return "网页内容进程" }
+        if command.contains("WindowServer") { return "窗口显示服务" }
+        if command.contains("signpost_reporter") { return "系统性能日志" }
+        if command.contains("PerfPowerServicesSignpostReader") { return "系统性能采样" }
+        if command.contains("FuYu") || command.contains("浮屿.app") { return "浮屿" }
+        for component in command.split(separator: "/") where component.hasSuffix(".app") {
+            return String(component.dropLast(4))
+        }
         let value = URL(fileURLWithPath: command).lastPathComponent
         return value.isEmpty ? command : value
     }

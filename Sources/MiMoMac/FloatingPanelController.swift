@@ -14,11 +14,11 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
 
     private let sizes: [AppState.OverlayMode: NSSize] = [
         .orb: NSSize(width: 62, height: 62),
-        .voice: NSSize(width: 430, height: 102),
-        .response: NSSize(width: 388, height: 182),
-        .task: NSSize(width: 430, height: 82),
-        .approval: NSSize(width: 430, height: 112),
-        .history: NSSize(width: 430, height: 390)
+        .voice: NSSize(width: 468, height: 112),
+        .response: NSSize(width: 420, height: 198),
+        .task: NSSize(width: 468, height: 94),
+        .approval: NSSize(width: 486, height: 128),
+        .history: NSSize(width: 480, height: 430)
     ]
 
     init(

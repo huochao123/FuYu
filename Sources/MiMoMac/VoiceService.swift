@@ -11,7 +11,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private let state: AppState
     private let preferences: AssistantPreferences
     private let audioEngine = AVAudioEngine()
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private let synthesizer = AVSpeechSynthesizer()
     private let logger = Logger(subsystem: "ai.fuyu.desktop", category: "voice")
     private var audioPlayer: AVAudioPlayer?
@@ -19,6 +19,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var continuousTask: Task<Void, Never>?
     private var outputVolumeRestoreTask: Task<Void, Never>?
     private var audioStartupWatchdogTask: Task<Void, Never>?
+    private var voiceActivitySubmissionTask: Task<Void, Never>?
     private var outputVolumeBeforeListening: LocalMacControlService.VolumeState?
 
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -40,6 +41,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var currentSpokenText = ""
     private var recognitionGeneration = 0
     private var audioBufferCount = 0
+    private var detectedUserAudio = false
+    private var lastDetectedVoiceAt: Date?
+    private var consecutiveVoiceBuffers = 0
     private var audioStartupRecoveryAttempts = 0
     private var continuousGeneration = 0
     private var isContinuousFollowUp = false
@@ -54,7 +58,10 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     var permissionSummary: String {
-        "语音识别=\(SFSpeechRecognizer.authorizationStatus().rawValue)，麦克风=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)"
+        let speech = SFSpeechRecognizer.authorizationStatus().rawValue
+        let microphone = AVCaptureDevice.authorizationStatus(for: .audio).rawValue
+        let mode = preferences.recognitionEngine == .mimoHybrid ? "MiMo 模式不依赖 Apple 语音授权" : "Apple 识别需要语音授权"
+        return "语音识别=\(speech)，麦克风=\(microphone)（\(mode)）"
     }
 
     func testMiMoSpeech() async throws -> String {
@@ -154,6 +161,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func startListening() async {
         guard !isListening else { return }
+        // Only an explicit voice entry point may transition into a permission
+        // request. Text messages and passive notifications never get here.
+        state.beginVoiceInteraction()
         isContinuousFollowUp = false
         await startListening(continuousFollowUp: false)
     }
@@ -171,6 +181,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func startListeningForApproval() async {
+        guard state.interactionSource == .voice else { return }
         isContinuousFollowUp = false
         audioStartupRecoveryAttempts = 0
         recognitionRecoveryAttempts = 0
@@ -183,7 +194,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func startListeningForTaskInterruption() async {
-        guard preferences.voiceInterruption else { return }
+        guard preferences.voiceInterruption, state.voiceSessionActive else { return }
         isContinuousFollowUp = false
         audioStartupRecoveryAttempts = 0
         recognitionRecoveryAttempts = 0
@@ -220,19 +231,34 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         outputVolumeRestoreTask = nil
         cleanupRecording()
         latestTranscript = ""
+        voiceActivitySubmissionTask?.cancel()
+        voiceActivitySubmissionTask = nil
         audioBufferCount = 0
+        detectedUserAudio = false
+        lastDetectedVoiceAt = nil
+        consecutiveVoiceBuffers = 0
         recognitionGeneration &+= 1
         let generation = recognitionGeneration
         logger.notice("Starting recognition generation \(generation)")
 
-        guard let speechRecognizer, speechRecognizer.isAvailable else {
-            state.presentError("语音识别暂时不可用，请稍后再试。")
-            return
-        }
-        if preferences.recognitionEngine == .appleLocal,
-           !speechRecognizer.supportsOnDeviceRecognition {
-            state.presentError("这台 Mac 当前没有可用的中文本地识别，请安装听写语言或改用在线识别。")
-            return
+        // A recognizer object that has just been cancelled can remain backed by
+        // the previous speech daemon session for a short time. A fresh object
+        // per turn prevents the continuous follow-up from inheriting it.
+        let useAppleLiveRecognition = SFSpeechRecognizer.authorizationStatus() == .authorized
+        let turnRecognizer = useAppleLiveRecognition
+            ? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+            : nil
+        if let turnRecognizer {
+            speechRecognizer = turnRecognizer
+            guard turnRecognizer.isAvailable else {
+                state.presentError("语音识别暂时不可用，请稍后再试。")
+                return
+            }
+            if preferences.recognitionEngine == .appleLocal,
+               !turnRecognizer.supportsOnDeviceRecognition {
+                state.presentError("这台 Mac 当前没有可用的中文本地识别，请安装听写语言或改用在线识别。")
+                return
+            }
         }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -241,12 +267,19 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         request.requiresOnDeviceRecognition = preferences.recognitionEngine == .appleLocal
         recognitionRequest = request
 
-        recognitionTask = Self.makeRecognitionTask(
-            recognizer: speechRecognizer,
-            request: request,
-            service: self,
-            generation: generation
-        )
+        if let turnRecognizer {
+            recognitionTask = Self.makeRecognitionTask(
+                recognizer: turnRecognizer,
+                request: request,
+                service: self,
+                generation: generation
+            )
+        } else {
+            // MiMo hybrid mode can record and submit audio without Apple's
+            // Speech permission. The overlay still reports real voice activity
+            // and shows the corrected final text after submission.
+            recognitionTask = nil
+        }
 
         outputVolumeBeforeListening = try? await LocalMacControlService.shared.volumeState()
         let input = audioEngine.inputNode
@@ -314,6 +347,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         silenceTask = nil
         audioStartupWatchdogTask?.cancel()
         audioStartupWatchdogTask = nil
+        voiceActivitySubmissionTask?.cancel()
+        voiceActivitySubmissionTask = nil
         audioEngine.stop()
         removeTapIfNeeded()
         recognitionRequest?.endAudio()
@@ -334,7 +369,10 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 do {
                     let corrected = try await self.transcribeWithMiMo(fileURL: capturedRecordingURL)
                     if !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        finalText = corrected
+                        finalText = Self.preferredTranscript(
+                            apple: finalText,
+                            mimo: corrected
+                        )
                     }
                 } catch {
                     // Apple live recognition remains the offline/failure fallback.
@@ -353,6 +391,30 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             self.listeningForTaskInterruption = false
             self.onTranscriptReady?(finalText)
         }
+    }
+
+    /// MiMo is a correction candidate, not an unconditional replacement.
+    /// When both engines heard substantially different words, preserving the
+    /// live Apple transcript is safer and keeps the text the user already saw.
+    nonisolated static func preferredTranscript(apple: String, mimo: String) -> String {
+        let appleText = apple.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mimoText = mimo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mimoText.isEmpty else { return appleText }
+        guard !appleText.isEmpty else { return mimoText }
+
+        func symbols(_ value: String) -> Set<Character> {
+            Set(value.lowercased().filter { $0.isLetter || $0.isNumber })
+        }
+        let appleSymbols = symbols(appleText)
+        let mimoSymbols = symbols(mimoText)
+        let union = appleSymbols.union(mimoSymbols)
+        let agreement = union.isEmpty
+            ? 1.0
+            : Double(appleSymbols.intersection(mimoSymbols).count) / Double(union.count)
+
+        // Similar candidates usually mean MiMo repaired punctuation or同音字。
+        // Low-overlap rewrites remain uncertain and must not silently win.
+        return agreement >= 0.45 ? mimoText : appleText
     }
 
     private func handleApprovalTranscript(_ transcript: String) -> Bool {
@@ -461,6 +523,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         continuousGeneration &+= 1
         audioStartupWatchdogTask?.cancel()
         audioStartupWatchdogTask = nil
+        voiceActivitySubmissionTask?.cancel()
+        voiceActivitySubmissionTask = nil
         recoveryTask?.cancel()
         recoveryTask = nil
         bargeInStartTask?.cancel()
@@ -532,7 +596,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             throw VoiceOutputError.missingKey("MiMo")
         }
         let messages: [[String: String]] = [
-            ["role": "user", "content": String(preferences.speechInstructions.prefix(500))],
+            ["role": "user", "content": preferences.effectiveSpeechInstructions],
             ["role": "assistant", "content": text]
         ]
         let body: [String: Any] = [
@@ -598,7 +662,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             "model": "gpt-4o-mini-tts",
             "voice": preferences.openAIVoice.rawValue,
             "input": text,
-            "instructions": String(preferences.speechInstructions.prefix(500)),
+            "instructions": preferences.effectiveSpeechInstructions,
             "response_format": "wav"
         ]
         return try await requestAudio(
@@ -619,7 +683,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "text": text,
             "format": "wav",
-            "instructions": String(preferences.speechInstructions.prefix(500))
+            "instructions": preferences.effectiveSpeechInstructions
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -659,24 +723,32 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     private func requestPermissionsIfNeeded() async -> Bool {
-        let speechAllowed: Bool
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized:
-            speechAllowed = true
-        case .notDetermined:
-            speechAllowed = await Self.requestSpeechAuthorization()
-        default:
-            speechAllowed = false
-        }
-
         let microphoneAllowed: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             microphoneAllowed = true
         case .notDetermined:
+            guard state.interactionSource == .voice else { return false }
             microphoneAllowed = await AVCaptureDevice.requestAccess(for: .audio)
         default:
             microphoneAllowed = false
+        }
+        guard microphoneAllowed else { return false }
+
+        // MiMo performs the final transcription from the recorded audio and
+        // therefore does not need Apple's separate Speech authorization.
+        // If Speech is already allowed, it is used only for live partial text.
+        if preferences.recognitionEngine == .mimoHybrid { return true }
+
+        let speechAllowed: Bool
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            speechAllowed = true
+        case .notDetermined:
+            guard state.interactionSource == .voice else { return false }
+            speechAllowed = await Self.requestSpeechAuthorization()
+        default:
+            speechAllowed = false
         }
 
         return speechAllowed && microphoneAllowed
@@ -745,6 +817,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 if let transcript {
                     if service.handleBargeInTranscript(transcript) { return }
                     service.latestTranscript = transcript
+                    service.voiceActivitySubmissionTask?.cancel()
+                    service.voiceActivitySubmissionTask = nil
                     service.state.updateTranscript(service.latestTranscript, isFinal: isFinal)
                     if service.handleApprovalTranscript(transcript) { return }
                     service.scheduleAutomaticSubmission(for: transcript)
@@ -782,6 +856,30 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                       service.recognitionGeneration == generation else { return }
                 service.audioBufferCount += 1
                 service.state.audioLevel = service.state.audioLevel * 0.58 + normalized * 0.42
+                if normalized >= 0.08 {
+                    service.consecutiveVoiceBuffers += 1
+                    service.lastDetectedVoiceAt = Date()
+                    if service.consecutiveVoiceBuffers >= 6, !service.detectedUserAudio {
+                        service.detectedUserAudio = true
+                        if service.listeningForBargeIn {
+                            // Voice processing has suppressed the assistant's
+                            // own playback and sustained near-end speech remains:
+                            // stop talking immediately, then reuse this live
+                            // capture as the user's next turn.
+                            service.listeningForBargeIn = false
+                            service.bargeInSpokenText = ""
+                            service.cancelSpeech(preservingBargeInRecognition: true)
+                            service.state.beginListening()
+                            service.state.noteDetectedVoiceActivity()
+                            service.scheduleVoiceActivitySubmissionFallback(generation: generation)
+                        } else if !service.listeningForTaskInterruption {
+                            service.state.noteDetectedVoiceActivity()
+                            service.scheduleVoiceActivitySubmissionFallback(generation: generation)
+                        }
+                    }
+                } else if normalized < 0.04 {
+                    service.consecutiveVoiceBuffers = 0
+                }
             }
         }
     }
@@ -830,9 +928,32 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         bufferCount == 0 && recoveryAttempts < 1
     }
 
+    private func scheduleVoiceActivitySubmissionFallback(generation: Int) {
+        guard preferences.recognitionEngine == .mimoHybrid,
+              voiceActivitySubmissionTask == nil else { return }
+        voiceActivitySubmissionTask = Task { @MainActor [weak self] in
+            while let self,
+                  !Task.isCancelled,
+                  self.isListening,
+                  self.recognitionGeneration == generation,
+                  self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let lastVoice = self.lastDetectedVoiceAt else { continue }
+                if Date().timeIntervalSince(lastVoice) >= 1.2 {
+                    self.voiceActivitySubmissionTask = nil
+                    self.stopListeningAndSubmit()
+                    return
+                }
+            }
+            self?.voiceActivitySubmissionTask = nil
+        }
+    }
+
     private func stopRecognitionResources() {
         audioStartupWatchdogTask?.cancel()
         audioStartupWatchdogTask = nil
+        voiceActivitySubmissionTask?.cancel()
+        voiceActivitySubmissionTask = nil
         silenceTask?.cancel()
         silenceTask = nil
         if audioEngine.isRunning {
@@ -963,7 +1084,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         let explicitEndings = [
             "就这样", "就这样吧", "去执行吧", "执行吧", "开始执行吧", "开始吧", "就这么办", "按这个做", "照这个做",
             "好了执行吧", "可以了", "好了",
-            "停一下", "等一下", "先别执行", "暂停任务", "取消任务"
+            "停一下", "等一下", "先别执行", "暂停任务", "取消任务",
+            "结束对话", "关闭对话", "停止对话", "退出对话", "结束聊天", "关闭聊天",
+            "结束语音", "关闭语音", "退出语音", "结束通话", "关闭通话", "挂断", "挂断电话"
         ]
         let sentenceEndings = ["。", "！", "？", ".", "!", "?"]
         let base = Int(baseSeconds * 1_000)
@@ -980,7 +1103,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     private func scheduleInitialSilenceTimeout() {
         silenceTask?.cancel()
-        let timeout = preferences.silenceTimeout
+        let timeout = preferences.continuousConversation
+            ? max(preferences.silenceTimeout, 20)
+            : preferences.silenceTimeout
         let generation = recognitionGeneration
         silenceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
@@ -989,6 +1114,24 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                   self.isListening,
                   self.recognitionGeneration == generation,
                   self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+            // If Apple returned no partial text but the microphone did hear a
+            // real voice, keep waiting until the speaker has paused and submit
+            // the recording to MiMo instead of deleting the whole turn.
+            while self.detectedUserAudio,
+                  let lastVoice = self.lastDetectedVoiceAt,
+                  Date().timeIntervalSince(lastVoice) < 1.2 {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled,
+                      self.isListening,
+                      self.recognitionGeneration == generation,
+                      self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            }
+            if self.detectedUserAudio,
+               self.preferences.recognitionEngine == .mimoHybrid {
+                self.stopListeningAndSubmit()
+                return
+            }
             self.stopRecognitionResources()
             self.cleanupRecording()
             if self.listeningForApproval, self.state.showPermission {
@@ -998,6 +1141,16 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                     try? await Task.sleep(for: .milliseconds(350))
                     guard let self, self.state.showPermission else { return }
                     await self.startListeningForApproval()
+                }
+            } else if self.preferences.continuousConversation,
+                      self.state.voiceSessionActive {
+                self.state.beginListening()
+                self.state.updateTranscript("我还在，随时可以说…")
+                self.recoveryTask?.cancel()
+                self.recoveryTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard let self, self.state.voiceSessionActive else { return }
+                    await self.beginListening()
                 }
             } else {
                 self.state.resetToIdle()

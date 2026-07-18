@@ -49,6 +49,7 @@ struct AssistantRootView: View {
         .allowsHitTesting(state.isExpanded)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: state.overlayMode)
         .animation(.easeOut(duration: 0.2), value: state.isExpanded)
+        .preferredColorScheme(.dark)
         .onChange(of: state.overlayMode) { _, mode in
             layoutChanged(mode)
         }
@@ -194,7 +195,7 @@ private struct AssistantOrb: View {
                         LinearGradient(
                             colors: [
                                 Color(red: 0.025, green: 0.035, blue: 0.075).opacity(0.9),
-                                Color(red: 0.09, green: 0.06, blue: 0.18).opacity(0.82)
+                                Color(red: 0.035, green: 0.12, blue: 0.16).opacity(0.86)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -204,7 +205,7 @@ private struct AssistantOrb: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
-                            colors: [.cyan.opacity(0.42), .white.opacity(0.18), Color.purple.opacity(0.4)],
+                            colors: [.cyan.opacity(0.42), .white.opacity(0.18), Color.blue.opacity(0.34)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -212,11 +213,11 @@ private struct AssistantOrb: View {
                     )
                     .shadow(color: .cyan.opacity(0.24), radius: 8)
                     .frame(width: 48, height: 34)
-                OrbParticleField()
+                OrbParticleField(animated: false)
                     .frame(width: 43, height: 27)
             }
         case .particleBare:
-            OrbParticleField()
+            OrbParticleField(animated: false)
                 .frame(width: 48, height: 31)
         case .classicOrb:
             ZStack {
@@ -258,7 +259,7 @@ private struct AssistantOrb: View {
                         )
                     )
 
-                OrbDotWave()
+                OrbDotWave(animated: false)
                     .frame(width: 31, height: 27)
 
                 Circle()
@@ -405,7 +406,7 @@ private struct ConversationBubble: View {
 
             HStack(spacing: 0) {
                 BubbleTail()
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.88))
+                    .fill(Color(red: 0.055, green: 0.07, blue: 0.11).opacity(0.94))
                     .frame(width: 9, height: 18)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -419,6 +420,12 @@ private struct ConversationBubble: View {
                         Text(state.modelLabel)
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
                             .foregroundStyle(.secondary)
+                        if let backgroundTitle = state.backgroundTaskTitle {
+                            Label(backgroundTitle, systemImage: backgroundTaskIcon)
+                                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                .foregroundStyle(backgroundTaskColor)
+                                .lineLimit(1)
+                        }
                     }
 
                     Text(state.transcript)
@@ -427,6 +434,13 @@ private struct ConversationBubble: View {
                         .lineLimit(3)
                         .frame(minHeight: 34, alignment: .topLeading)
                         .contentTransition(.opacity)
+
+                    LiveLevelRail(
+                        level: state.audioLevel,
+                        color: state.phaseColor,
+                        active: state.phase == .listening || state.phase == .speaking
+                    )
+                    .frame(height: 4)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
@@ -434,16 +448,23 @@ private struct ConversationBubble: View {
                 .background(FloatingGlass(cornerRadius: 21))
 
                 Button {
-                    state.openHistory()
+                    if state.voiceSessionActive {
+                        state.endVoiceSession()
+                    } else {
+                        state.openHistory()
+                    }
                 } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: state.voiceSessionActive ? "phone.down.fill" : "clock.arrow.circlepath")
                         .font(.system(size: 11, weight: .semibold))
                         .frame(width: 28, height: 28)
-                        .background(.primary.opacity(0.07), in: Circle())
+                        .background(
+                            state.voiceSessionActive ? Color.red.opacity(0.18) : .primary.opacity(0.07),
+                            in: Circle()
+                        )
                 }
                 .buttonStyle(FloatingTapButtonStyle())
-                .foregroundStyle(.secondary)
-                .help("查看聊天记录")
+                .foregroundStyle(state.voiceSessionActive ? Color.red : Color.secondary)
+                .help(state.voiceSessionActive ? "结束语音通话" : "查看聊天记录")
             }
         }
         .padding(.horizontal, 4)
@@ -458,6 +479,26 @@ private struct ConversationBubble: View {
         case .live: "实时识别"
         case .finalizing: "正在校正"
         case .final: "已采用这句话"
+        }
+    }
+
+    private var backgroundTaskIcon: String {
+        switch state.backgroundTaskStatus {
+        case .running: "arrow.trianglehead.2.clockwise"
+        case .stalled: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        case nil: ""
+        }
+    }
+
+    private var backgroundTaskColor: Color {
+        switch state.backgroundTaskStatus {
+        case .running: .mint
+        case .stalled: .orange
+        case .completed: .green
+        case .failed: .red
+        case nil: .secondary
         }
     }
 
@@ -539,7 +580,7 @@ private struct ConversationHistoryCard: View {
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(color(for: item.kind))
                     Spacer()
-                    Text(item.createdAt, style: .time)
+                    Text(AppState.displayTimestamp(for: item.createdAt))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.tertiary)
                 }
@@ -586,16 +627,29 @@ private struct PhaseParticleGlyph: View {
     var glowRadius: CGFloat = 11
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            skinVisual(time: time)
+        Group {
+            if animateContinuously {
+                TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+                    phaseVisual(time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                phaseVisual(time: 0)
+            }
+        }
+        .frame(width: 64, height: 62)
+        .contentShape(Rectangle())
+    }
+
+    private var animateContinuously: Bool {
+        state.phase == .listening || state.phase == .thinking || state.phase == .executing || state.phase == .speaking
+    }
+
+    private func phaseVisual(time: TimeInterval) -> some View {
+        skinVisual(time: time)
             .frame(width: 54, height: 42)
             .scaleEffect(scale(time))
             .offset(x: shake(time))
             .shadow(color: state.phaseColor.opacity(glow(time)), radius: glowRadius)
-        }
-        .frame(width: 64, height: 62)
-        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -603,18 +657,18 @@ private struct PhaseParticleGlyph: View {
         switch preferences.floatingSkin {
         case .particleFrame:
             glassFrame(cornerRadius: 17) {
-                OrbParticleField().frame(width: 43, height: 28)
+                OrbParticleField(animated: animateContinuously).frame(width: 43, height: 28)
             }
             .rotationEffect(.degrees(rotation(time)))
         case .particleBare:
-            OrbParticleField()
+            OrbParticleField(animated: animateContinuously)
                 .frame(width: 50, height: 34)
                 .rotationEffect(.degrees(rotation(time)))
         case .classicOrb:
             ZStack {
                 Circle().fill(.ultraThinMaterial)
                 Circle().fill(state.phaseColor.opacity(0.2)).blur(radius: 6).padding(5)
-                OrbDotWave().frame(width: 30, height: 25)
+                OrbDotWave(animated: animateContinuously).frame(width: 30, height: 25)
                 Circle().strokeBorder(.white.opacity(0.32), lineWidth: 0.8)
             }
             .frame(width: 42, height: 42)
@@ -696,7 +750,7 @@ private struct CompactTaskBubble: View {
 
             HStack(spacing: 0) {
                 BubbleTail()
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.88))
+                    .fill(Color(red: 0.055, green: 0.07, blue: 0.11).opacity(0.94))
                     .frame(width: 9, height: 18)
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -762,7 +816,7 @@ private struct ApprovalCard: View {
             PhaseParticleGlyph(state: state, preferences: preferences, glowRadius: 8)
 
             BubbleTail()
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.9))
+                .fill(Color(red: 0.055, green: 0.07, blue: 0.11).opacity(0.95))
                 .frame(width: 9, height: 20)
 
             VStack(alignment: .leading, spacing: 7) {
@@ -815,7 +869,7 @@ private struct ApprovalCard: View {
                         .frame(height: 27)
                         .background(
                             LinearGradient(
-                                colors: [state.phaseColor, Color.purple.opacity(0.88)],
+                colors: [state.phaseColor, Color.cyan.opacity(0.76)],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             ),
@@ -857,36 +911,74 @@ private struct ApprovalVoiceWave: View {
     }
 }
 
+private struct LiveLevelRail: View {
+    let level: Double
+    let color: Color
+    let active: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.055))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [.cyan.opacity(0.82), color, Color.blue.opacity(0.72)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(12, proxy.size.width * CGFloat(active ? max(level, 0.08) : 0.12)))
+                    .shadow(color: color.opacity(active ? 0.42 : 0.12), radius: 5)
+            }
+        }
+        .animation(.spring(response: 0.16, dampingFraction: 0.7), value: level)
+        .animation(.easeOut(duration: 0.2), value: active)
+        .accessibilityHidden(true)
+    }
+}
+
 private struct FloatingGlass: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color(NSColor.windowBackgroundColor).opacity(0.97),
-                        Color(NSColor.controlBackgroundColor).opacity(0.91)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.07))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.64), .white.opacity(0.12)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.7
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.055, green: 0.075, blue: 0.12).opacity(0.94),
+                            Color(red: 0.035, green: 0.045, blue: 0.085).opacity(0.91),
+                            .black.opacity(0.38)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-            }
+                )
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [.cyan.opacity(0.09), .clear],
+                        center: .topLeading,
+                        startRadius: 0,
+                        endRadius: 170
+                    )
+                )
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.34), .cyan.opacity(0.14), Color.blue.opacity(0.1), .white.opacity(0.045)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+        }
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.32), radius: 18, y: 8)
+        .shadow(color: .cyan.opacity(0.055), radius: 22, y: -3)
     }
 }
 

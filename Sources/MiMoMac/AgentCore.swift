@@ -18,6 +18,7 @@ enum AgentToolID: String, CaseIterable, Codable, Sendable {
     case optimization = "mac.optimization"
     case volume = "mac.volume"
     case brightness = "mac.brightness"
+    case openApplication = "mac.open_application"
     case capabilities = "fuyu.capabilities"
     case applyJunkCleanup = "mac.junk_apply"
     case applyDownloadsOrganization = "mac.downloads_apply"
@@ -49,6 +50,7 @@ enum AgentToolRegistry {
         .init(id: .optimization, title: "优化建议", purpose: "综合存储和性能状态给出建议", risk: .readOnly, arguments: "无"),
         .init(id: .volume, title: "音量", purpose: "读取、设置、增减音量或静音", risk: .reversible, arguments: "action=read|set|change|mute，value=0...100 或增量，muted=true|false"),
         .init(id: .brightness, title: "亮度", purpose: "在硬件支持时读取或调整屏幕亮度", risk: .reversible, arguments: "action=read|set|change，value=0...100 或增量"),
+        .init(id: .openApplication, title: "打开应用", purpose: "直接在本机打开已安装应用，不经过 Hermes", risk: .reversible, arguments: "name=应用名称"),
         .init(id: .capabilities, title: "浮屿能力", purpose: "说明浮屿身份、真实本机能力和安全边界", risk: .readOnly, arguments: "无"),
         .init(id: .applyJunkCleanup, title: "执行安全清理", purpose: "根据最新垃圾预览移到废纸篓", risk: .requiresApproval, arguments: "无；必须已有最新扫描"),
         .init(id: .applyDownloadsOrganization, title: "执行下载整理", purpose: "根据最新预览移动下载文件", risk: .requiresApproval, arguments: "无；必须已有最新扫描")
@@ -78,6 +80,8 @@ enum AgentToolRegistry {
             adjustmentCommand(arguments: call.arguments, brightness: false)
         case .brightness:
             adjustmentCommand(arguments: call.arguments, brightness: true)
+        case .openApplication:
+            call.arguments["name"].map(LocalMacCommand.openApplication)
         }
     }
 

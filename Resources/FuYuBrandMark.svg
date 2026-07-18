@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="420" viewBox="0 0 640 420" fill="none">
+  <defs>
+    <linearGradient id="line" x1="110" y1="70" x2="535" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8CF4FF"/>
+      <stop offset="0.48" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#A879FF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(320 210) rotate(90) scale(170 250)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#68DFFF" stop-opacity=".24"/>
+      <stop offset="1" stop-color="#7658FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="320" cy="210" rx="250" ry="170" fill="url(#glow)"/>
+  <path d="M112 226C158 151 227 113 320 113C413 113 482 151 528 226" stroke="url(#line)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M142 271C196 301 255 316 320 316C385 316 444 301 498 271" stroke="url(#line)" stroke-width="10" stroke-linecap="round" opacity=".55"/>
+  <g fill="url(#line)">
+    <rect x="239" y="200" width="17" height="54" rx="8.5" opacity=".72"/>
+    <rect x="273" y="171" width="17" height="112" rx="8.5" opacity=".86"/>
+    <rect x="307" y="143" width="17" height="168" rx="8.5"/>
+    <rect x="341" y="164" width="17" height="126" rx="8.5" opacity=".9"/>
+    <rect x="375" y="193" width="17" height="68" rx="8.5" opacity=".76"/>
+  </g>
+</svg>

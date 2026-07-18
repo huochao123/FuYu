@@ -15,6 +15,8 @@ mkdir -p "$ICONSET_DIR"
 cp "$ROOT_DIR/.build/$CONFIGURATION/MiMoMac" "$APP_DIR/Contents/MacOS/FuYu"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/fuyu_feishu_bridge.py" "$APP_DIR/Contents/Resources/fuyu_feishu_bridge.py"
+ditto "$ROOT_DIR/Resources/MacSkills" "$APP_DIR/Contents/Resources/MacSkills"
+ditto "$ROOT_DIR/Resources/Personas" "$APP_DIR/Contents/Resources/Personas"
 cp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$APP_DIR/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$ROOT_DIR/Vendor/DustyCleanerEngine/LICENSE" "$APP_DIR/Contents/Resources/DustyCleanerEngine-LICENSE.txt"
 

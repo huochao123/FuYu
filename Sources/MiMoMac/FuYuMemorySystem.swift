@@ -17,6 +17,7 @@ final class FuYuMemorySystem {
         var request: String
         var lastAssistantContext: String
         var status: Status
+        var createdAt: Date?
         var updatedAt: Date
     }
 
@@ -79,6 +80,7 @@ final class FuYuMemorySystem {
             request: String(request.prefix(1_500)),
             lastAssistantContext: String(assistantContext.prefix(1_500)),
             status: status,
+            createdAt: items[userIndex].createdAt,
             updatedAt: Date()
         )
         persistFocus()
@@ -108,7 +110,8 @@ final class FuYuMemorySystem {
         limit: Int = 8
     ) -> [AppState.ConversationItem] {
         let queryTerms = Self.terms(query)
-        guard !queryTerms.isEmpty else { return [] }
+        let temporalRange = Self.temporalRange(for: query, now: Date())
+        guard !queryTerms.isEmpty || temporalRange != nil else { return [] }
 
         return archiveItems
             .filter { !excludedIDs.contains($0.id) }
@@ -117,7 +120,13 @@ final class FuYuMemorySystem {
                 let overlap = queryTerms.intersection(Self.terms(item.text)).count
                 let taskBonus = item.kind == .action ? 1 : 0
                 let recencyBonus = index / 150
-                return (index: index, item: item, score: overlap * 5 + taskBonus + recencyBonus)
+                let temporalBonus: Int
+                if let temporalRange, temporalRange.contains(item.createdAt) {
+                    temporalBonus = 40
+                } else {
+                    temporalBonus = 0
+                }
+                return (index: index, item: item, score: overlap * 5 + taskBonus + recencyBonus + temporalBonus)
             }
             .filter { $0.score > 0 }
             .sorted {
@@ -129,6 +138,26 @@ final class FuYuMemorySystem {
             .map(\.item)
     }
 
+    static func temporalRange(for query: String, now: Date) -> Range<Date>? {
+        let compact = query.filter { $0.isLetter || $0.isNumber }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let dayOffset: Int?
+        if compact.contains("前天") {
+            dayOffset = -2
+        } else if compact.contains("昨天") || compact.contains("昨日") {
+            dayOffset = -1
+        } else if compact.contains("今天") || compact.contains("今日") {
+            dayOffset = 0
+        } else {
+            dayOffset = nil
+        }
+        guard let dayOffset,
+              let start = calendar.date(byAdding: .day, value: dayOffset, to: today),
+              let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
+        return start..<end
+    }
+
     func observeUserMessage(_ text: String) {
         guard !Self.isContextDependent(text) else {
             touchFocus()
@@ -136,7 +165,14 @@ final class FuYuMemorySystem {
         }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.count >= 4 else { return }
-        focus = .init(request: String(value.prefix(1_500)), lastAssistantContext: "", status: .discussing, updatedAt: Date())
+        let now = Date()
+        focus = .init(
+            request: String(value.prefix(1_500)),
+            lastAssistantContext: "",
+            status: .discussing,
+            createdAt: now,
+            updatedAt: now
+        )
         persistFocus()
     }
 
@@ -157,12 +193,17 @@ final class FuYuMemorySystem {
     }
 
     func contextualizedRequest(_ text: String) -> String {
-        guard Self.isContextDependent(text), let focus else { return text }
+        let commandTime = AppState.memoryTimestamp(for: Date())
+        guard Self.isContextDependent(text), let focus else {
+            return "[当前命令时间：\(commandTime)]\n用户命令：\(text)"
+        }
+        let taskTime = AppState.memoryTimestamp(for: focus.createdAt ?? focus.updatedAt)
         return """
-        \(text)
+        [当前命令时间：\(commandTime)]
+        用户命令：\(text)
 
         [浮屿工作记忆：这是一句承接上文的短指令，不是新会话。]
-        当前任务：\(focus.request)
+        当前任务（创建于 \(taskTime)）：\(focus.request)
         当前状态：\(focus.status.rawValue)
         浮屿上一轮关于该任务的说明：\(focus.lastAssistantContext.isEmpty ? "无" : focus.lastAssistantContext)
         请直接承接这个任务，不要要求用户重新解释。
@@ -171,7 +212,9 @@ final class FuYuMemorySystem {
 
     var focusPrompt: String {
         guard let focus else { return "当前没有已记录的工作任务。" }
-        return "当前任务：\(focus.request)\n状态：\(focus.status.rawValue)\n上一轮任务说明：\(focus.lastAssistantContext.isEmpty ? "无" : focus.lastAssistantContext)"
+        let created = AppState.memoryTimestamp(for: focus.createdAt ?? focus.updatedAt)
+        let updated = AppState.memoryTimestamp(for: focus.updatedAt)
+        return "当前任务（创建于 \(created)）：\(focus.request)\n状态：\(focus.status.rawValue)\n最后更新：\(updated)\n上一轮任务说明：\(focus.lastAssistantContext.isEmpty ? "无" : focus.lastAssistantContext)"
     }
 
     func clear() throws {

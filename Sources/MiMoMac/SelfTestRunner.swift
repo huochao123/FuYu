@@ -17,16 +17,41 @@ enum SelfTestRunner {
         let historyURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-history-\(UUID().uuidString).json")
         let archiveURL = historyURL.deletingPathExtension().appendingPathExtension("archive.jsonl")
         let focusURL = historyURL.deletingPathExtension().appendingPathExtension("task-focus.json")
+        let healthURL = historyURL.deletingPathExtension().appendingPathExtension("health-events.json")
         defer {
             try? FileManager.default.removeItem(at: historyURL)
             try? FileManager.default.removeItem(at: archiveURL)
             try? FileManager.default.removeItem(at: focusURL)
+            try? FileManager.default.removeItem(at: healthURL)
         }
         let state = AppState(historyURL: historyURL)
         check(state.overlayMode == .orb, "初始状态是悬浮球")
         state.beginListening()
         check(state.overlayMode == .voice && state.phase == .listening, "录音状态切换")
+        check(state.voiceSessionActive && state.isExpanded, "语音通话会话保持开启")
+        state.beginBackgroundTask("整理下载文件夹")
+        check(
+            state.backgroundTaskStatus == .running && state.backgroundTaskTitle == "整理下载文件夹",
+            "后台任务状态与语音会话相互独立"
+        )
+        state.finishBackgroundTask("已完成 · 整理下载文件夹")
+        check(state.backgroundTaskStatus == .completed && state.voiceSessionActive, "后台任务完成不结束语音通话")
+        state.clearBackgroundTask()
+        let parallelJobA = state.beginBackgroundJob("系统体检", kind: .readOnly)
+        let parallelJobB = state.beginBackgroundJob("重复文件", kind: .readOnly)
+        check(state.backgroundJobs.filter { $0.status == .running }.count == 2, "多个只读任务可以同时进入任务中心")
+        state.finishBackgroundJob(parallelJobA, summary: "完成")
+        state.finishBackgroundJob(parallelJobB, summary: "完成")
+        var localJobCancelled = false
+        let cancellableJob = state.beginBackgroundJob("启动项", kind: .readOnly) {
+            localJobCancelled = true
+        }
+        state.requestCancelBackgroundJob(cancellableJob)
+        check(localJobCancelled, "任务中心可以取消由电脑管家直接启动的并行检测")
+        state.finishBackgroundJob(cancellableJob, summary: "已停止", failed: true)
         check(state.recognitionStage == .waiting && state.transcript == "我在听…", "识别窗口等待声音")
+        state.noteDetectedVoiceActivity()
+        check(state.recognitionStage == .live && state.transcript == "听到声音，正在识别…", "识别窗口反馈已收到真实声音")
         state.updateTranscript("帮我创建一个会议")
         check(state.recognitionStage == .live && state.transcript == "帮我创建一个会议", "识别窗口实时显示文字")
         state.beginFinalizingRecognition()
@@ -149,8 +174,24 @@ enum SelfTestRunner {
         check(preferences.voiceActionApproval, "授权卡默认支持明确语音确认")
         check(preferences.voiceInterruption, "朗读与执行过程默认允许语音打断")
         check(preferences.voiceInputEnabled, "主界面语音识别总开关默认开启")
+        check(preferences.autonomousMaintenance, "低频自主维护默认开启且只做本机检测")
         check(MainWindowTheme.allCases.count == 3 && preferences.mainWindowTheme == .deepOcean, "三套主界面皮肤与深海默认主题")
         check(MacCareTool.allCases.count == 9, "电脑管家九项本机工具注册")
+        let organizeRoot = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-undo-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: organizeRoot, withIntermediateDirectories: true)
+            let original = organizeRoot.appendingPathComponent("example.txt")
+            try Data("undo".utf8).write(to: original)
+            let moved = MacCareService.organizeDownloads(
+                [.init(source: original, destinationDirectory: organizeRoot.appendingPathComponent("文档", isDirectory: true))],
+                allowedRoot: organizeRoot
+            )
+            let restored = MacCareService.undoOrganization(moved.completedMoves, allowedRoot: organizeRoot)
+            check(moved.moved == 1 && restored.moved == 1 && FileManager.default.fileExists(atPath: original.path), "智能整理可以安全撤回并验证原位置")
+        } catch {
+            check(false, "智能整理可以安全撤回并验证原位置")
+        }
+        try? FileManager.default.removeItem(at: organizeRoot)
         let sharedReport = MacCareReport(
             tool: .hotProcesses,
             headline: "发现 1 个持续高负载进程",
@@ -160,8 +201,16 @@ enum SelfTestRunner {
         check(
             state.latestMacCareReport?.tool == .hotProcesses
                 && state.macCareContextPrompt.contains("ExampleApp")
-                && state.macCareReportVersion == 1,
+                && state.macCareReportVersion == 1
+                && state.healthEvents.last?.category == MacCareTool.hotProcesses.rawValue,
             "电脑管家结果同步到助手共享上下文"
+        )
+        check(
+            state.latestMacDiagnosticFinding?.source.contains("发热进程") == true
+                && state.latestMacDiagnosticFinding?.impact.contains("发热") == true
+                && state.macDiagnosticContextPrompt.contains("处理归属")
+                && state.macDiagnosticContextPrompt.contains("ExampleApp"),
+            "检测结论包含来源、证据、影响、风险与处理归属"
         )
         state.recordAssistantMessage("我把这个重复文件甄别任务交给执行流程。")
         state.beginTextInteraction()
@@ -207,7 +256,8 @@ enum SelfTestRunner {
                 && LocalCommandRouter.command(for: "删除重复文件") == .scan(.duplicates)
                 && LocalCommandRouter.command(for: "你能做什么") == .capabilities
                 && LocalCommandRouter.command(for: "帮我分析下载文件夹") == .scan(.organize)
-                && LocalCommandRouter.command(for: "下载文件夹分析下") == .scan(.organize),
+                && LocalCommandRouter.command(for: "下载文件夹分析下") == .scan(.organize)
+                && LocalCommandRouter.command(for: "打开活动监视器") == .openApplication("活动监视器"),
             "基础 Mac 指令优先路由到浮屿本机能力且重复文件不直接删除"
         )
         let explanationFixture: [AppState.ConversationItem] = [
@@ -259,17 +309,52 @@ enum SelfTestRunner {
                 && preferences.profile.personaPrompt.contains("伴侣"),
             "自定义人格与关系设定"
         )
+        preferences.personaPreset = .wanNing
+        let ordinaryPersona = PersonaKnowledgeLibrary.select(
+            for: "帮我看一下电池状态",
+            enabled: true,
+            preset: .wanNing
+        )
+        let lorePersona = PersonaKnowledgeLibrary.select(
+            for: "你从哪里来，为什么会穿越到Mac里？",
+            enabled: true,
+            preset: .wanNing
+        )
+        check(
+            preferences.profile.personaPrompt.contains("当前人格：绾宁")
+                && preferences.profile.personaPrompt.contains("表面毒舌")
+                && preferences.profile.personaPrompt.count < 260
+                && preferences.effectiveSpeechInstructions.contains("轻微毒舌")
+                && preferences.personaStyledReply("你好，有什么需要帮助的吗？").contains("我在")
+                && preferences.personaStyledReply("操作失败：权限不足").contains("操作失败：权限不足")
+                && preferences.personaStyledSpeech("请确认执行").contains("请确认执行"),
+            "绾宁人格同时约束文字、语音且不改变工具与安全事实"
+        )
+        check(
+            PersonaKnowledgeLibrary.validationErrors().isEmpty
+                && ordinaryPersona.loadedIDs.isEmpty
+                && ordinaryPersona.loadedCharacterCount == 0
+                && lorePersona.loadedIDs == ["wan-ning-lore"]
+                && lorePersona.loadedPrompt.contains("家传铜镜"),
+            "日常只用精简人格，询问身世时才读取完整人物档案"
+        )
+        preferences.personaPreset = .custom
+        check(
+            preferences.personaStyledReply("你好，有什么需要帮助的吗？") == "你好，有什么需要帮助的吗？",
+            "切回自定义人格后不残留绾宁输出修饰"
+        )
         check(PushToTalkShortcut.allCases.count == 6 && preferences.pushToTalkShortcut == .fnHold, "Fn 与可修改快捷键预设")
         var shortcutPresses = 0
         var shortcutReleases = 0
         let shortcutMonitor = GlobalShortcutMonitor(
             shortcut: .fnHold,
+            functionHoldDelayMilliseconds: 0,
             onPress: { shortcutPresses += 1 },
             onRelease: { shortcutReleases += 1 }
         )
         shortcutMonitor.handleFunctionFlags(.function)
         shortcutMonitor.handleFunctionFlags([])
-        check(shortcutPresses == 1 && shortcutReleases == 1, "Fn 按下与松开事件")
+        check(shortcutPresses == 1 && shortcutReleases == 1, "Fn 明确长按后启动、松开后提交")
         check(
             AppDelegate.deepLinkAction(for: URL(string: "fuyu://listen")!) == "listen"
                 && AppDelegate.deepLinkAction(for: URL(string: "fuyu://settings")!) == "settings",
@@ -306,6 +391,11 @@ enum SelfTestRunner {
             "第二轮麦克风没有音频缓冲时只自动重建一次"
         )
         check(
+            VoiceService.preferredTranscript(apple: "测试语音", mimo: "陈海云") == "测试语音"
+                && VoiceService.preferredTranscript(apple: "检查一下磁盘空间", mimo: "检查一下磁盘空间。") == "检查一下磁盘空间。",
+            "混合识别保留低重合的现场文字并接受高重合校正"
+        )
+        check(
             VoiceService.userInterruptionText(transcript: "这是助手正在说的话", spokenText: "这是助手正在说的话") == nil
                 && VoiceService.userInterruptionText(transcript: "停一下改成下午五点", spokenText: "我正在执行创建会议") == "停一下改成下午五点",
             "朗读回声会被忽略而用户抢话会被接收"
@@ -316,6 +406,83 @@ enum SelfTestRunner {
                 && !AssistantRuntime.isPauseOnlyCommand("等一下，改成下午五点"),
             "执行中暂停与修改指令分流"
         )
+        check(
+            AssistantRuntime.isEndConversationCommand("结束对话")
+                && AssistantRuntime.isEndConversationCommand("请关闭对话吧")
+                && AssistantRuntime.isEndConversationCommand("挂断电话")
+                && !AssistantRuntime.isEndConversationCommand("我们继续对话"),
+            "语音口令可以直接结束连续对话"
+        )
+        check(
+            AssistantRuntime.isBackgroundTaskControlCommand("暂停当前任务")
+                && AssistantRuntime.isBackgroundTaskControlCommand("这个任务改成只整理图片")
+                && !AssistantRuntime.isBackgroundTaskControlCommand("顺便告诉我现在几点"),
+            "普通语音不会取消后台任务"
+        )
+        let stalledNow = Date()
+        check(
+            AppState.shouldMarkBackgroundTaskStalled(
+                startedAt: stalledNow.addingTimeInterval(-3_600),
+                lastProgressAt: stalledNow.addingTimeInterval(-600),
+                now: stalledNow
+            )
+                && !AppState.shouldMarkBackgroundTaskStalled(
+                    startedAt: stalledNow.addingTimeInterval(-3_600),
+                    lastProgressAt: stalledNow.addingTimeInterval(-60),
+                    now: stalledNow
+                )
+                && AssistantRuntime.isBackgroundTaskStatusQuery("这个任务执行多久了，还正常吗"),
+            "长时间无进度会标记为可能卡住并如实回答等待时长"
+        )
+        let temporalNow = Date()
+        let timestamp = AppState.memoryTimestamp(for: temporalNow, relativeTo: temporalNow)
+        check(
+            timestamp.contains("今天") && timestamp.contains("+")
+                && FuYuMemorySystem.temporalRange(for: "昨天那个任务", now: temporalNow) != nil
+                && FuYuMemorySystem.temporalRange(for: "普通聊天", now: temporalNow) == nil,
+            "AI 上下文包含绝对时间并能按昨天检索任务"
+        )
+        check(
+            MacExpertKnowledgeBase.context(for: "麦克风第二轮语音识别没有声音").contains("CoreAudio")
+                && MacExpertKnowledgeBase.context(for: "扩展坞网卡总是断线").contains("设备重枚举"),
+            "Mac 专家知识按问题检索音频与网络诊断规则"
+        )
+        let audioSkill = MacSkillLibrary.select(for: "麦克风第二轮语音识别没有声音", limit: 1)
+        let unrelatedSkill = MacSkillLibrary.select(for: "给我讲一个睡前故事", limit: 1)
+        let batterySkill = MacSkillLibrary.select(for: "电池掉电很快，循环次数正常吗", limit: 1)
+        let panicSkill = MacSkillLibrary.select(for: "昨晚出现kernel panic自动重启", limit: 1)
+        check(
+            MacSkillLibrary.validationErrors().isEmpty
+                && audioSkill.indexPrompt.split(separator: "\n").count == 26,
+            "Mac Skill 索引与二十六个知识文件完整有效"
+        )
+        check(
+            audioSkill.loadedIDs == ["mac-audio"]
+                && audioSkill.loadedCharacterCount > 0
+                && !audioSkill.loadedPrompt.contains("mac-network"),
+            "相关问题只按需加载一个 Mac Skill 正文"
+        )
+        check(
+            batterySkill.loadedIDs == ["mac-battery"]
+                && panicSkill.loadedIDs == ["mac-kernel-panic"],
+            "电池与内核故障能命中新增专业专题"
+        )
+        check(
+            unrelatedSkill.loadedIDs.isEmpty
+                && unrelatedSkill.loadedCharacterCount == 0
+                && unrelatedSkill.indexPrompt.contains("mac-audio"),
+            "无关聊天只携带小索引，不加载复杂知识正文"
+        )
+        let experienceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fuyu-mac-experience-\(UUID().uuidString).json")
+        let experienceStore = MacExperienceStore(storeURL: experienceURL)
+        experienceStore.record(task: "修复麦克风第二轮识别", result: "重建识别会话后验证成功", succeeded: true)
+        check(
+            experienceStore.count == 1
+                && experienceStore.context(for: "麦克风识别失败").contains("验证成功"),
+            "Mac 本机经验按系统版本持久化并可相关检索"
+        )
+        try? experienceStore.clear()
         check(
             VoiceService.shouldAttemptRecognitionRecovery(attempts: 0, hasCapturedText: false)
                 && VoiceService.shouldAttemptRecognitionRecovery(attempts: 1, hasCapturedText: false)
@@ -331,8 +498,12 @@ enum SelfTestRunner {
         )
         preferences.contextTurns = 12
         check(
-            preferences.profile.contextEnabled && preferences.profile.contextTurns == 12,
+            preferences.profile.contextEnabled && preferences.profile.contextTurns == 8,
             "上下文记忆配置"
+        )
+        check(
+            AssistantRuntime.requestsPlainLanguageMemory("我看不懂，下次用大白话跟我说，记住了吗"),
+            "自然表达也能保存新手友好的解释偏好"
         )
         check(
             AssistantPreferences.memoryCommand(for: "记住：我喜欢简短回答") == .remember("我喜欢简短回答")
@@ -351,6 +522,14 @@ enum SelfTestRunner {
         do {
             let reply = try MiMoAssistantClient.parseDecision(#"{"kind":"reply","reply":"这里是完整回答","spokenReply":"你好"}"#)
             check(reply == .reply(text: "这里是完整回答", spoken: "你好"), "普通回答解析")
+            do {
+                _ = try MiMoAssistantClient.parseDecision(#"{"kind":"reply","reply":"损坏的"引号"}"#)
+                check(false, "损坏的模型 JSON 不会原样泄漏到聊天")
+            } catch AssistantServiceError.invalidResponse {
+                check(true, "损坏的模型 JSON 不会原样泄漏到聊天")
+            } catch {
+                check(false, "损坏的模型 JSON 不会原样泄漏到聊天")
+            }
             let tool = try MiMoAssistantClient.parseDecision(
                 #"{"kind":"tool","tool":"mac.downloads_analyze","arguments":{}}"#
             )

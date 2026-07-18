@@ -30,6 +30,11 @@ final class AssistantRuntime {
     private let hermes = HermesCommandRunner()
 
     private var requestTask: Task<Void, Never>?
+    private var backgroundActionTasks: [UUID: Task<Void, Never>] = [:]
+    private var backgroundRunners: [UUID: HermesCommandRunner] = [:]
+    private var readOnlyTasks: [UUID: Task<Void, Never>] = [:]
+    private var mutationTasks: [UUID: Task<Void, Never>] = [:]
+    private var mutationTail: Task<Void, Never>?
     private var pendingAction: PendingAction?
     private var activeAction: PendingAction?
     private var pendingClarification: PendingClarification?
@@ -57,7 +62,10 @@ final class AssistantRuntime {
             Task { @MainActor in await self.voice.startListening() }
         }
         state.onCancelRequested = { [weak self] in
-            self?.cancelCurrentWork()
+            self?.cancelAllWork()
+        }
+        state.onVoiceSessionEndRequested = { [weak self] in
+            self?.voice.cancelAll()
         }
         state.onVoiceSubmitRequested = { [weak self] in
             self?.voice.stopListeningAndSubmit()
@@ -69,6 +77,9 @@ final class AssistantRuntime {
             } else {
                 self.executeApprovedAction(approvalID: approvalID)
             }
+        }
+        state.onBackgroundJobCancelRequested = { [weak self] id in
+            self?.cancelBackgroundJob(id)
         }
     }
 
@@ -84,6 +95,12 @@ final class AssistantRuntime {
     }
 
     func handleTranscript(_ text: String) {
+        if Self.isEndConversationCommand(text) {
+            voice.cancelAll()
+            state.recordActionStatus("用户通过语音结束了连续对话")
+            state.resetToIdle(message: "语音对话已结束")
+            return
+        }
         state.beginVoiceInteraction()
         handleUserInput(text, shouldSpeak: true, isVoice: true)
     }
@@ -133,13 +150,28 @@ final class AssistantRuntime {
                 Task { @MainActor [weak self] in await self?.voice.startListeningForApproval() }
                 return
             }
+            // A typed question while an approval is visible must not silently
+            // replace or bypass the pending action. Keep the card in place and
+            // explain the exact operation in ordinary text instead.
+            state.recordAssistantMessage("当前还在等你确认“\(state.approvalTitle)”。\(state.approvalDetail) 如果同意，请输入“允许执行”；不想做就输入“取消执行”。想修改要求时，先取消再告诉我新的做法。")
+            return
         }
 
-        if let interruptedAction = activeAction {
+        if Self.isBackgroundTaskStatusQuery(cleaned),
+           let summary = state.backgroundTaskUserSummary {
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            deliverReply(summary, suggestedSpoken: summary, shouldSpeak: shouldSpeak)
+            return
+        }
+
+        if let interruptedAction = activeAction,
+           Self.isBackgroundTaskControlCommand(cleaned) {
             let originalRequest = interruptedAction.originalRequest
             let pauseOnly = Self.isPauseOnlyCommand(cleaned)
+            cancelBackgroundWork()
             cancelCurrentWork()
-            state.recordActionStatus("已暂停当前任务：(interruptedAction.title)")
+            state.recordActionStatus("已暂停当前任务：\(interruptedAction.title)")
             pendingClarification = .init(originalRequest: originalRequest)
             if pauseOnly {
                 state.beginThinking(userText: cleaned)
@@ -150,6 +182,14 @@ final class AssistantRuntime {
                 )
                 return
             }
+        }
+
+        if Self.requestsPlainLanguageMemory(cleaned) {
+            cancelCurrentWork()
+            state.beginThinking(userText: cleaned)
+            _ = preferences.rememberHabit("技术与系统检测结果请用新手能看懂的简单中文解释；先说结论、影响和怎么处理，不直接堆进程路径、编号或原始日志。")
+            deliverReply("记住了。以后系统结果我先讲人话：哪里有问题、会有什么影响、你要不要处理；原始数据只在你想看时再展开。", suggestedSpoken: "记住了，以后我先用简单的话讲清结论和处理办法。", shouldSpeak: shouldSpeak)
+            return
         }
 
         if let command = AssistantPreferences.memoryCommand(for: cleaned) {
@@ -171,19 +211,24 @@ final class AssistantRuntime {
             return
         }
 
-        switch AgentIntentEngine.route(for: cleaned, conversation: state.conversation) {
-        case let .reply(reply):
-            cancelCurrentWork()
-            state.beginThinking(userText: cleaned)
-            deliverReply(reply, suggestedSpoken: nil, shouldSpeak: shouldSpeak)
-            return
-        case let .local(localCommand):
-            cancelCurrentWork()
-            state.beginThinking(userText: cleaned)
-            handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
-            return
-        case .model:
-            break
+        let needsPersonaLore = preferences.personaEnabled
+            && preferences.personaPreset == .wanNing
+            && PersonaKnowledgeLibrary.shouldLoadLore(for: cleaned)
+        if !needsPersonaLore {
+            switch AgentIntentEngine.route(for: cleaned, conversation: state.conversation) {
+            case let .reply(reply):
+                cancelCurrentWork()
+                state.beginThinking(userText: cleaned)
+                deliverReply(reply, suggestedSpoken: nil, shouldSpeak: shouldSpeak)
+                return
+            case let .local(localCommand):
+                cancelCurrentWork()
+                state.beginThinking(userText: cleaned)
+                handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
+                return
+            case .model:
+                break
+            }
         }
 
         let effectiveRequest: String
@@ -207,9 +252,17 @@ final class AssistantRuntime {
         } else {
             effectiveRequest = cleaned
         }
+        if effectiveRequest != cleaned,
+           let question = Self.missingCriticalDetailsQuestion(for: effectiveRequest) {
+            pendingClarification = .init(originalRequest: effectiveRequest)
+            state.beginThinking(userText: cleaned)
+            state.recordActionStatus("执行前仍需补充：\(question)")
+            deliverReply(question, suggestedSpoken: question, shouldSpeak: shouldSpeak)
+            return
+        }
         let requestForModel = preferences.profile.persistentMemory
             ? state.contextualizedRequest(effectiveRequest)
-            : effectiveRequest
+            : "[当前命令时间：\(AppState.memoryTimestamp(for: Date()))]\n用户命令：\(effectiveRequest)"
 
         cancelCurrentWork(preservingClarification: true)
         state.beginThinking(userText: cleaned)
@@ -218,11 +271,39 @@ final class AssistantRuntime {
             guard let self else { return }
             do {
                 let capabilities = await LocalMacCapabilityManifest.current()
+                let diagnosticHint = self.state.latestMacDiagnosticFinding.map {
+                    "\($0.source) \($0.summary) \($0.skillID)"
+                } ?? ""
+                let skillSelection = MacSkillLibrary.select(
+                    for: effectiveRequest + " " + diagnosticHint,
+                    limit: 1
+                )
+                let learnedExperience = MacExperienceStore.shared.context(for: effectiveRequest)
+                let contextQuery = effectiveRequest.lowercased()
+                let needsCareEvidence = [
+                    "电脑", "mac", "系统", "发热", "温度", "卡顿", "内存", "磁盘", "空间",
+                    "垃圾", "缓存", "重复", "启动项", "异常", "检测", "优化", "管家", "进程"
+                ].contains(where: contextQuery.contains)
+                let refersToTask = [
+                    "任务", "执行", "进度", "多久", "完成", "刚才", "继续", "取消", "它", "那个"
+                ].contains(where: contextQuery.contains)
+                let careContext = needsCareEvidence
+                    ? "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
+                        + "\n\n结构化检测责任卡：\n" + self.state.macDiagnosticContextPrompt
+                    : ""
+                let taskContext = refersToTask
+                    ? "\n\n当前后台任务及耗时：\n" + self.state.backgroundTaskContextPrompt
+                    : ""
                 let localContext = capabilities.prompt
-                    + "\n最新电脑管家结果：\n" + self.state.macCareContextPrompt
+                    + "\n\nMac Skill 能力索引（仅目录，不是诊断结论）：\n" + skillSelection.indexPrompt
+                    + "\n\n当前按需加载的 Mac Skill（最多一个，只有相关时才加载正文）：\n" + skillSelection.loadedPrompt
+                    + "\n\n这台 Mac 的已验证经验（系统版本不匹配时只能参考，必须重新验证）：\n" + learnedExperience
+                    + careContext
+                    + taskContext
                     + "\n\n对话记忆：\n" + self.state.conversationContextPrompt(
                         for: effectiveRequest,
-                        includePersistent: self.preferences.profile.persistentMemory
+                        includePersistent: self.preferences.profile.persistentMemory,
+                        recentLimit: self.preferences.profile.contextTurns
                     )
                 let decision = try await self.modelClient.decide(
                     for: requestForModel,
@@ -256,7 +337,7 @@ final class AssistantRuntime {
                     }
                     if Self.requiresPlanReview(userText: effectiveRequest) {
                         self.state.recordActionStatus("复杂任务预审：正在向 Hermes 获取只读方案")
-                        let proposedPlan = try await self.hermes.proposePlan(for: prompt)
+                        let proposedPlan = try await HermesCommandRunner().proposePlan(for: prompt)
                         try Task.checkCancellation()
                         let review = try await self.modelClient.reviewExecutionPlan(
                             userRequest: effectiveRequest,
@@ -297,7 +378,8 @@ final class AssistantRuntime {
                 return
             } catch AssistantServiceError.modelTimeout {
                 let message = AssistantServiceError.modelTimeout.localizedDescription
-                self.state.recordActionStatus(message, failed: true)
+                // One user-visible reply is enough; recording a separate failed
+                // action produced two nearly identical cards for one timeout.
                 self.deliverReply(message, suggestedSpoken: "模型响应超时，本机工具仍然可以直接使用。", shouldSpeak: shouldSpeak)
             } catch {
                 self.state.presentError(error.localizedDescription)
@@ -380,8 +462,8 @@ final class AssistantRuntime {
             && ["创建", "新建", "开一个", "开个", "预约", "安排"].contains(where: value.contains)
         guard isMeetingCreation else { return nil }
 
-        let hasTime = value.range(of: #"([0-2]?\d)[:：点时]|今天|明天|后天|上午|下午|晚上"#, options: .regularExpression) != nil
-        let hasDuration = value.range(of: #"\d+\s*(分钟|小时)|到\s*[0-2]?\d"#, options: .regularExpression) != nil
+        let hasTime = value.range(of: #"([0-2]?\d)[:：点时]|今天|明天|后天|上午|下午|晚上|现在|立即|马上"#, options: .regularExpression) != nil
+        let hasDuration = value.range(of: #"([0-9一二两三四五六七八九十]+)\s*(分钟|小时)|到\s*[0-2]?\d"#, options: .regularExpression) != nil
         let hasRecurrenceChoice = ["单次", "临时", "长期", "周期", "每天", "每周", "工作日", "重复"].contains(where: value.contains)
         let asksLongTerm = ["长期", "周期", "每天", "每周", "工作日", "重复"].contains(where: value.contains)
         let hasLongTermBoundary = !asksLongTerm || ["到", "截止", "共", "场", "次", "长期有效"].contains(where: value.contains)
@@ -389,6 +471,14 @@ final class AssistantRuntime {
             return "这个会议什么时候开始、持续多久？是单次会议还是长期重复？如果长期，请告诉我重复频率和结束日期或总场次。"
         }
         return nil
+    }
+
+    static func requestsPlainLanguageMemory(_ text: String) -> Bool {
+        let compact = text.replacingOccurrences(of: " ", with: "")
+        let asksRemember = compact.contains("记住") || compact.contains("下次") || compact.contains("以后")
+        let needsSimple = compact.contains("看不懂") || compact.contains("小白") || compact.contains("简单点")
+            || compact.contains("大白话") || compact.contains("这么说")
+        return asksRemember && needsSimple
     }
 
     static func normalizedApprovalPhrase(_ text: String) -> String {
@@ -399,6 +489,39 @@ final class AssistantRuntime {
         let compact = text.filter { $0.isLetter || $0.isNumber }
         return ["停", "停一下", "等一下", "先停一下", "先别执行", "暂停", "暂停任务", "取消任务"]
             .contains(compact)
+    }
+
+    static func isBackgroundTaskControlCommand(_ text: String) -> Bool {
+        let compact = text.filter { $0.isLetter || $0.isNumber }
+        if isPauseOnlyCommand(compact) { return true }
+        return [
+            "取消当前任务", "停止当前任务", "暂停当前任务", "终止当前任务",
+            "取消这个任务", "停止这个任务", "暂停这个任务", "终止这个任务",
+            "修改当前任务", "修改这个任务", "这个任务改成", "当前任务改成"
+        ].contains(where: compact.contains)
+    }
+
+    static func isBackgroundTaskStatusQuery(_ text: String) -> Bool {
+        let compact = text.filter { $0.isLetter || $0.isNumber }
+        let taskSignals = ["任务", "执行", "后台", "刚才那个", "那个操作"]
+        let statusSignals = ["怎么样", "怎么了", "完成了吗", "好了吗", "还没好", "多久", "进度", "正常吗", "卡住", "还在做"]
+        return taskSignals.contains(where: compact.contains)
+            && statusSignals.contains(where: compact.contains)
+    }
+
+    static func isEndConversationCommand(_ text: String) -> Bool {
+        var compact = text.filter { $0.isLetter || $0.isNumber }
+        for prefix in ["请", "帮我", "麻烦"] where compact.hasPrefix(prefix) {
+            compact.removeFirst(prefix.count)
+        }
+        for suffix in ["吧", "了", "谢谢"] where compact.hasSuffix(suffix) {
+            compact.removeLast(suffix.count)
+        }
+        return [
+            "结束对话", "关闭对话", "停止对话", "退出对话",
+            "结束聊天", "关闭聊天", "结束语音", "关闭语音", "退出语音",
+            "结束通话", "关闭通话", "挂断", "挂断电话"
+        ].contains(compact)
     }
 
     static func cleanActionTitle(_ title: String) -> String {
@@ -416,42 +539,62 @@ final class AssistantRuntime {
         requestTask = nil
         pendingAction = nil
         pendingLocalAction = nil
-        activeAction = nil
         if !preservingClarification { pendingClarification = nil }
-        hermes.cancel()
         voice.cancelAll()
     }
 
+    private func cancelBackgroundWork() {
+        for task in backgroundActionTasks.values { task.cancel() }
+        for task in readOnlyTasks.values { task.cancel() }
+        for task in mutationTasks.values { task.cancel() }
+        for runner in backgroundRunners.values { runner.cancel() }
+        backgroundActionTasks.removeAll()
+        backgroundRunners.removeAll()
+        readOnlyTasks.removeAll()
+        mutationTasks.removeAll()
+        mutationTail?.cancel()
+        mutationTail = nil
+        activeAction = nil
+        hermes.cancel()
+        state.clearBackgroundTask()
+    }
+
+    private func cancelBackgroundJob(_ id: UUID) {
+        backgroundActionTasks[id]?.cancel()
+        readOnlyTasks[id]?.cancel()
+        mutationTasks[id]?.cancel()
+        backgroundRunners[id]?.cancel()
+        backgroundActionTasks[id] = nil
+        readOnlyTasks[id] = nil
+        mutationTasks[id] = nil
+        backgroundRunners[id] = nil
+        state.finishBackgroundJob(id, summary: "用户已取消", failed: true)
+        state.recordActionStatus("已取消后台任务", failed: true)
+    }
+
+    private func cancelAllWork() {
+        cancelCurrentWork()
+        cancelBackgroundWork()
+    }
+
     private func handleLocalCommand(_ command: LocalMacCommand, shouldSpeak: Bool) {
+        if case let .scan(tool) = command {
+            startReadOnlyScan(tool, shouldSpeak: shouldSpeak)
+            return
+        }
         requestTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 switch command {
-                case let .scan(tool):
-                    self.state.markTaskFocus(.executing)
-                    self.state.beginLocalExecution(title: tool.rawValue)
-                    self.state.updateExecution(progress: 0.48, step: 1)
-                    let report = try await Task.detached(priority: .userInitiated) {
-                        try await MacCareService.run(tool)
-                    }.value
-                    try Task.checkCancellation()
-                    self.state.updateExecution(progress: 0.94, step: 2)
-                    self.state.publishMacCareReport(report)
-                    self.state.recordActionStatus(report.displayText)
-                    self.state.markTaskFocus(.completed)
-                    try? await self.modelClient.recordActionResult(
-                        title: "电脑管家 · \(tool.rawValue)",
-                        result: report.displayText,
-                        succeeded: true,
-                        profile: self.preferences.profile
-                    )
-                    self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+                case .scan:
+                    return
                 case let .volume(adjustment):
                     self.state.markTaskFocus(.executing)
                     self.state.beginLocalExecution(title: "音量控制")
                     let result = try await LocalMacControlService.shared.adjustVolume(adjustment)
                     self.state.updateExecution(progress: 1, step: 2)
                     self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    MacExperienceStore.shared.record(task: "本机音量控制", result: result, succeeded: true)
                     self.state.markTaskFocus(.completed)
                     self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
                 case let .brightness(adjustment):
@@ -460,7 +603,13 @@ final class AssistantRuntime {
                     let result = try await LocalMacControlService.shared.adjustBrightness(adjustment)
                     self.state.updateExecution(progress: 1, step: 2)
                     self.state.recordActionStatus("浮屿本机控制 · \(result)")
+                    MacExperienceStore.shared.record(task: "本机亮度控制", result: result, succeeded: true)
                     self.state.markTaskFocus(.completed)
+                    self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
+                case let .openApplication(name):
+                    self.state.beginLocalExecution(title: "打开应用")
+                    let result = try await LocalMacControlService.shared.openApplication(named: name)
+                    self.state.recordActionStatus("浮屿本机控制 · \(result)")
                     self.deliverReply(result, suggestedSpoken: result, shouldSpeak: shouldSpeak)
                 case let .applyLatest(tool):
                     guard let report = self.state.latestMacCareReports[tool] else {
@@ -510,6 +659,35 @@ final class AssistantRuntime {
         }
     }
 
+    private func startReadOnlyScan(_ tool: MacCareTool, shouldSpeak: Bool) {
+        let jobID = state.beginBackgroundJob("电脑管家 · \(tool.rawValue)", kind: .readOnly)
+        state.beginLocalExecution(title: tool.rawValue)
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.readOnlyTasks[jobID] = nil }
+            do {
+                self.state.updateBackgroundJob(jobID, summary: "正在读取本机状态")
+                let report = try await Task.detached(priority: .userInitiated) {
+                    try await MacCareService.run(tool)
+                }.value
+                try Task.checkCancellation()
+                self.state.publishMacCareReport(report)
+                self.state.finishBackgroundJob(jobID, summary: report.headline)
+                try? await self.modelClient.recordActionResult(
+                    title: "电脑管家 · \(tool.rawValue)", result: report.displayText,
+                    succeeded: true, profile: self.preferences.profile
+                )
+                self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+            } catch is CancellationError {
+                self.state.finishBackgroundJob(jobID, summary: "已取消", failed: true)
+            } catch {
+                self.state.finishBackgroundJob(jobID, summary: error.localizedDescription, failed: true)
+                self.state.presentError(error.localizedDescription)
+            }
+        }
+        readOnlyTasks[jobID] = task
+    }
+
     private func prepareLocalRecommendation(
         _ recommendation: MacCareRecommendation,
         report: MacCareReport,
@@ -555,11 +733,17 @@ final class AssistantRuntime {
         pendingLocalAction = nil
         voice.cancelAll()
         state.beginLocalExecution(title: pending.title)
+        let jobID = state.beginBackgroundJob(pending.title, kind: .localMutation)
         state.markTaskFocus(.executing)
-        requestTask?.cancel()
-        requestTask = Task { @MainActor [weak self] in
+        keepVoiceAvailableDuringBackgroundTask()
+        let predecessor = mutationTail
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.mutationTasks[jobID] = nil }
+            if let predecessor { await predecessor.value }
+            guard !Task.isCancelled else { return }
             do {
+                self.state.updateBackgroundJob(jobID, summary: "正在执行已确认的本机修改")
                 let report = try await self.executeLocalAction(pending.recommendation.action, sourceReport: pending.report)
                 try Task.checkCancellation()
                 self.state.publishMacCareReport(report)
@@ -571,15 +755,28 @@ final class AssistantRuntime {
                     succeeded: true,
                     profile: self.preferences.profile
                 )
-                self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: pending.shouldSpeak)
+                self.state.finishBackgroundJob(jobID, summary: "已完成 · \(pending.title)")
+                if self.state.voiceSessionActive {
+                    self.state.recordAssistantMessage("后台任务已完成：\(pending.title)\n\(report.displayText)")
+                    self.resumeVoiceIfExecutionCardIsVisible()
+                } else {
+                    self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: pending.shouldSpeak)
+                }
             } catch is CancellationError {
                 return
             } catch {
                 self.state.markTaskFocus(.failed)
                 self.state.recordActionStatus("本机执行失败：\(error.localizedDescription)", failed: true)
-                self.state.presentError(error.localizedDescription)
+                self.state.finishBackgroundJob(jobID, summary: "失败 · \(pending.title)", failed: true)
+                if self.state.voiceSessionActive {
+                    self.resumeVoiceIfExecutionCardIsVisible()
+                } else {
+                    self.state.presentError(error.localizedDescription)
+                }
             }
         }
+        mutationTail = task
+        mutationTasks[jobID] = task
     }
 
     private func executeLocalAction(_ action: MacCareAction, sourceReport: MacCareReport) async throws -> MacCareReport {
@@ -594,6 +791,7 @@ final class AssistantRuntime {
             )
         case let .organizeDownloads(moves):
             let result = await Task.detached { MacCareService.organizeDownloads(moves) }.value
+            state.recordOrganizationTransaction(result.completedMoves)
             return MacCareReport(
                 tool: .organize,
                 headline: "已整理 \(result.moved) 个文件，跳过 \(result.skipped) 个",
@@ -622,17 +820,19 @@ final class AssistantRuntime {
         pendingAction = nil
         voice.cancelAll()
         state.beginExecution(title: action.title)
+        let jobID = state.beginBackgroundJob(action.title, kind: .hermes)
         state.markTaskFocus(.executing)
         activeAction = action
-        if action.shouldSpeak {
-            Task { @MainActor [weak self] in
-                await self?.voice.startListeningForTaskInterruption()
-            }
-        }
+        keepVoiceAvailableDuringBackgroundTask()
 
-        requestTask?.cancel()
-        requestTask = Task { @MainActor [weak self] in
+        let runner = HermesCommandRunner()
+        backgroundRunners[jobID] = runner
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                self.backgroundActionTasks[jobID] = nil
+                self.backgroundRunners[jobID] = nil
+            }
             let progressTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(350))
                 guard let self, !Task.isCancelled else { return }
@@ -644,14 +844,15 @@ final class AssistantRuntime {
             defer { progressTask.cancel() }
 
             do {
-                let result = try await self.hermes.execute(action.prompt)
+                self.state.updateBackgroundJob(jobID, summary: "Hermes 正在执行并验证")
+                let result = try await runner.execute(action.prompt)
                 try Task.checkCancellation()
-                self.voice.stopTaskInterruptionMonitoring()
                 self.activeAction = nil
                 self.state.updateExecution(progress: 0.94, step: 2)
                 try? await Task.sleep(for: .milliseconds(220))
                 try Task.checkCancellation()
                 self.state.recordActionStatus("执行成功：\(action.title)\n\(result)")
+                MacExperienceStore.shared.record(task: action.title, result: result, succeeded: true)
                 self.state.markTaskFocus(.completed)
                 try? await self.modelClient.recordActionResult(
                     title: action.title,
@@ -662,16 +863,22 @@ final class AssistantRuntime {
                 let naturalSpoken = action.shouldSpeak
                     ? try? await self.modelClient.makeNaturalSpokenSummary(for: result, profile: self.preferences.profile)
                     : nil
-                self.deliverReply(result, suggestedSpoken: naturalSpoken, shouldSpeak: action.shouldSpeak)
+                self.state.finishBackgroundJob(jobID, summary: "已完成 · \(action.title)")
+                if self.state.voiceSessionActive {
+                    self.state.recordAssistantMessage("后台任务已完成：\(action.title)\n\(result)")
+                    self.resumeVoiceIfExecutionCardIsVisible()
+                } else {
+                    self.deliverReply(result, suggestedSpoken: naturalSpoken, shouldSpeak: action.shouldSpeak)
+                }
             } catch is CancellationError {
                 return
             } catch AssistantServiceError.cancelled {
                 return
             } catch {
-                self.voice.stopTaskInterruptionMonitoring()
                 self.activeAction = nil
                 let message = error.localizedDescription
                 self.state.recordActionStatus("执行失败：\(action.title)\n\(message)", failed: true)
+                MacExperienceStore.shared.record(task: action.title, result: message, succeeded: false)
                 self.state.markTaskFocus(.failed)
                 try? await self.modelClient.recordActionResult(
                     title: action.title,
@@ -679,16 +886,38 @@ final class AssistantRuntime {
                     succeeded: false,
                     profile: self.preferences.profile
                 )
-                self.state.presentError(message)
+                self.state.finishBackgroundJob(jobID, summary: "失败 · \(action.title)", failed: true)
+                if self.state.voiceSessionActive {
+                    self.resumeVoiceIfExecutionCardIsVisible()
+                } else {
+                    self.state.presentError(message)
+                }
             }
+        }
+        backgroundActionTasks[jobID] = task
+    }
+
+    private func keepVoiceAvailableDuringBackgroundTask() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard let self,
+                  self.state.backgroundJobs.contains(where: { $0.status == .running || $0.status == .stalled }),
+                  self.state.voiceSessionActive else { return }
+            await self.voice.startListening()
         }
     }
 
+    private func resumeVoiceIfExecutionCardIsVisible() {
+        guard state.voiceSessionActive, state.phase == .executing else { return }
+        Task { @MainActor [weak self] in await self?.voice.startListening() }
+    }
+
     private func deliverReply(_ text: String, suggestedSpoken: String?, shouldSpeak: Bool) {
-        if shouldSpeak, let spoken = preferences.spokenText(fullText: text, suggested: suggestedSpoken) {
-            voice.speak(spoken, displayText: text)
+        let displayText = preferences.personaStyledReply(text)
+        if shouldSpeak, let spoken = preferences.spokenText(fullText: displayText, suggested: suggestedSpoken) {
+            voice.speak(preferences.personaStyledSpeech(spoken), displayText: displayText)
         } else {
-            state.presentSilentReply(text)
+            state.presentSilentReply(displayText)
             if state.interactionSource == .voice {
                 voice.continueAfterSilentReply()
             }

@@ -49,10 +49,24 @@ struct WaveGlyph: View {
 }
 
 struct OrbDotWave: View {
+    var animated = true
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            Canvas { context, size in
-                let time = timeline.date.timeIntervalSinceReferenceDate
+        Group {
+            if animated {
+                TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+                    content(time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                content(time: 0)
+            }
+        }
+        .drawingGroup()
+        .accessibilityHidden(true)
+    }
+
+    private func content(time: TimeInterval) -> some View {
+        Canvas { context, size in
                 let columns = 9
                 let spacing = size.width / CGFloat(columns + 1)
                 let centerY = size.height / 2
@@ -85,18 +99,29 @@ struct OrbDotWave: View {
                         context.fill(Path(ellipseIn: rect), with: .color(tint.opacity(0.3 + 0.34 * envelope)))
                     }
                 }
+        }
+    }
+}
+
+struct OrbParticleField: View {
+    var animated = true
+
+    var body: some View {
+        Group {
+            if animated {
+                TimelineView(.animation(minimumInterval: 1 / 24)) { timeline in
+                    content(time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                content(time: 0)
             }
         }
         .drawingGroup()
         .accessibilityHidden(true)
     }
-}
 
-struct OrbParticleField: View {
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            Canvas { context, size in
-                let time = timeline.date.timeIntervalSinceReferenceDate
+    private func content(time: TimeInterval) -> some View {
+        Canvas { context, size in
                 let columns = 13
                 let rows = 5
                 let xSpacing = size.width / CGFloat(columns + 1)
@@ -132,10 +157,7 @@ struct OrbParticleField: View {
                         )
                     }
                 }
-            }
         }
-        .drawingGroup()
-        .accessibilityHidden(true)
     }
 }
 

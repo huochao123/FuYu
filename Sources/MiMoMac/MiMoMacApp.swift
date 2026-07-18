@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingDeepLink: URL?
     private var voiceActivity: NSUserActivity?
     private var cancellables: Set<AnyCancellable> = []
+    private var maintenanceScheduler: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panelController = FloatingPanelController(
@@ -85,16 +86,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.setActivationPolicy(visible ? .regular : .accessory)
             }
             .store(in: &cancellables)
-        Publishers.CombineLatest(
+        Publishers.CombineLatest3(
             preferences.$feishuEnabled.removeDuplicates(),
-            preferences.$feishuAppID.removeDuplicates()
+            preferences.$feishuAppID.removeDuplicates(),
+            preferences.$feishuAllowedSenderID.removeDuplicates()
         )
-        .sink { [weak self] enabled, appID in
+        .sink { [weak self] enabled, appID, allowedSenderID in
             guard let self else { return }
             self.feishuBridge?.configure(
                 enabled: enabled,
                 appID: appID.trimmingCharacters(in: .whitespacesAndNewlines),
-                appSecret: self.preferences.feishuAppSecret
+                appSecret: enabled ? self.preferences.feishuAppSecret : nil,
+                allowedSenderID: allowedSenderID.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
         .store(in: &cancellables)
@@ -127,10 +130,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         donateStartVoiceActivity()
         thermalMonitor.onAlert = { [weak self] message in
             guard let self else { return }
-            self.voiceService?.cancelAll()
             self.state.presentNotification(message)
         }
+        thermalMonitor.onDiagnosticReport = { [weak self] report in
+            guard let self else { return }
+            let finding = MacDiagnosticFinding(report: report)
+            self.state.publishMacCareReport(report)
+            self.state.presentNotification("""
+            \(finding.summary)
+            风险：\(finding.severity.rawValue)；\(finding.ownership.rawValue)。
+            \(finding.impact)
+            """, recordInHistory: false)
+        }
         thermalMonitor.start()
+        startMaintenanceScheduler()
 
         if let pendingDeepLink {
             self.pendingDeepLink = nil
@@ -272,6 +285,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.isVisible = true
     }
 
+    private func startMaintenanceScheduler() {
+        maintenanceScheduler?.cancel()
+        maintenanceScheduler = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(90))
+            while let self, !Task.isCancelled {
+                let defaults = UserDefaults.standard
+                let lastRun = defaults.object(forKey: "fuyu.lastAutonomousSystemCheck") as? Date ?? .distantPast
+                let due = Date().timeIntervalSince(lastRun) >= 12 * 60 * 60
+                let busy = self.state.voiceSessionActive || self.state.phase == .listening || self.state.phase == .speaking
+                if self.preferences.autonomousMaintenance, due, !busy, !ProcessInfo.processInfo.isLowPowerModeEnabled {
+                    do {
+                        let report = try await MacCareService.run(.systemCheck)
+                        defaults.set(Date(), forKey: "fuyu.lastAutonomousSystemCheck")
+                        self.state.publishMacCareReport(report)
+                        let finding = MacDiagnosticFinding(report: report)
+                        if finding.severity != .normal {
+                            self.state.presentNotification("自主体检发现：\(finding.summary)\n\(finding.impact)", recordInHistory: false)
+                        }
+                    } catch {
+                        // A failed background check is retried on the next scheduler pass.
+                    }
+                }
+                try? await Task.sleep(for: .seconds(30 * 60))
+            }
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showMainWindow() }
         return true
@@ -336,6 +376,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runVoiceSmokeTest() {
         Task { @MainActor [weak self] in
             guard let self else { exit(1) }
+            let resultURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("fuyu-voice-smoke.txt")
             NSApplication.shared.activate(ignoringOtherApps: true)
             self.state.requestVoice()
 
@@ -350,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     : "系统授权尚未完成（\(self.voiceService?.permissionSummary ?? "状态未知")）"
                 self.runtime?.cancelCurrentWork()
                 self.shortcutMonitor?.stop()
+                try? "FAIL\n\(message)".write(to: resultURL, atomically: true, encoding: .utf8)
                 fputs("浮屿语音冒烟测试失败：\(message)\n", stderr)
                 exit(1)
             }
@@ -357,6 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: .milliseconds(900))
             self.state.cancel()
             self.shortcutMonitor?.stop()
+            try? "PASS\n点击入口、权限、麦克风启动与停止均正常".write(to: resultURL, atomically: true, encoding: .utf8)
             print("浮屿语音冒烟测试通过：点击入口、权限、麦克风启动与停止均正常")
             exit(0)
         }
@@ -547,6 +591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        maintenanceScheduler?.cancel()
         shortcutMonitor?.stop()
         thermalMonitor.stop()
         feishuBridge?.stop()

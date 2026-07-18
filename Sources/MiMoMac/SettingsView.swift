@@ -67,7 +67,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(width: 720, height: 540)
+        .frame(width: 820, height: 600)
         .background(
             ZStack {
                 LinearGradient(
@@ -165,7 +165,14 @@ struct SettingsView: View {
             .padding(.horizontal, 10)
         }
         .padding(16)
-        .frame(width: 172)
+        .frame(width: 190)
+        .background(
+            LinearGradient(
+                colors: [.white.opacity(0.06), .cyan.opacity(0.025), .black.opacity(0.16)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .background(.ultraThinMaterial)
         .overlay(alignment: .trailing) {
             Rectangle().fill(.white.opacity(0.075)).frame(width: 0.7)
@@ -173,12 +180,32 @@ struct SettingsView: View {
     }
 
     private var pageHeader: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(viewState.selection.rawValue)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-            Text(pageSubtitle)
-                .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 13) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(Color.cyan.opacity(0.1))
+                Image(systemName: viewState.selection.icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.cyan)
+            }
+            .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(viewState.selection.rawValue)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                Text(pageSubtitle)
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Circle().fill(.mint).frame(width: 6, height: 6)
+                Text("设置即时生效")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.white.opacity(0.035), in: Capsule())
         }
     }
 
@@ -321,7 +348,7 @@ struct SettingsView: View {
                 HStack {
                     Text(title).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(tint)
                     Spacer()
-                    Text(item.createdAt, style: .time)
+                    Text(AppState.displayTimestamp(for: item.createdAt))
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
                 }
                 Text(item.text)
@@ -338,6 +365,18 @@ struct SettingsView: View {
     private var voicePage: some View {
         VStack(spacing: 14) {
             settingsCard {
+                Toggle(isOn: $preferences.voiceInputEnabled) {
+                    settingLabel("语音输入", detail: "只有点击说话或明确长按快捷键才会请求权限；打字与系统通知不会启动麦克风")
+                }
+                Divider()
+                settingRow("按住说话快捷键", detail: "Fn 需明确长按约 0.3 秒，轻触不会启动收音") {
+                    Picker("", selection: $preferences.pushToTalkShortcut) {
+                        ForEach(PushToTalkShortcut.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 220)
+                }
+                .disabled(!preferences.voiceInputEnabled)
+                Divider()
                 settingRow("语音引擎", detail: "聊天模型和说话声音可以独立选择") {
                     Picker("", selection: $preferences.speechEngine) {
                         ForEach(SpeechEngine.allCases) { Text($0.title).tag($0) }
@@ -364,7 +403,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Label("云端声音由 AI 生成；MiMo 会复用已保存的 MiMo 密钥。", systemImage: "cloud")
+                Label("文字聊天与语音完全分离；云端声音只在需要播报时生成。", systemImage: "hand.raised.fill")
                     .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
                 Spacer()
                 Button("试听声音") {
@@ -563,20 +602,40 @@ struct SettingsView: View {
                     settingLabel("启用角色扮演", detail: "可以作为朋友、伴侣、家人、搭档或你创建的人物")
                 }
                 Divider()
+                settingRow("人格方案", detail: preferences.personaPreset.summary) {
+                    Picker("", selection: $preferences.personaPreset) {
+                        ForEach(PersonaPreset.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().frame(width: 210)
+                }
+                .disabled(!preferences.personaEnabled)
+                if preferences.personaEnabled, preferences.personaPreset == .wanNing {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("绾宁 · 古来客", systemImage: "moon.stars.fill")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("架空古代书香门第少女，因铜镜异变误入Mac。不了解现代世界，却能从浮屿的Mac知识中学习；表面毒舌、实际细心护短，最信任你但不会盲从危险命令。文字与语音共同生效，不改变工具能力。")
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 2)
+                }
+                Divider()
                 settingRow("关系预设", detail: "预设只提供关系方向，下面的内容仍可完全修改") {
                     Picker("", selection: $preferences.personaRelationship) {
                         ForEach(PersonaRelationship.allCases) { Text($0.title).tag($0) }
                     }
                     .labelsHidden().frame(width: 180)
                 }
-                .disabled(!preferences.personaEnabled)
+                .disabled(!preferences.personaEnabled || preferences.personaPreset != .custom)
                 Divider()
                 settingRow("角色名称", detail: "留空时由对话和人物背景自然决定") {
                     TextField("例如：小屿", text: $preferences.personaName)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 220)
                 }
-                .disabled(!preferences.personaEnabled)
+                .disabled(!preferences.personaEnabled || preferences.personaPreset != .custom)
             }
 
             settingsCard {
@@ -601,7 +660,7 @@ struct SettingsView: View {
                     height: 72
                 )
             }
-            .disabled(!preferences.personaEnabled)
+            .disabled(!preferences.personaEnabled || preferences.personaPreset != .custom)
 
             settingsCard {
                 HStack(alignment: .top, spacing: 12) {
@@ -704,6 +763,7 @@ struct SettingsView: View {
 
     private func applyImportedCharacter(_ imported: ImportedTavernPersona, merge: Bool) {
         preferences.personaEnabled = true
+        preferences.personaPreset = .custom
         preferences.personaRelationship = .custom
         if !imported.name.isEmpty { preferences.personaName = imported.name }
         if merge {
@@ -740,13 +800,13 @@ struct SettingsView: View {
             memoryLayerOverview
             settingsCard {
                 Toggle(isOn: $preferences.contextEnabled) {
-                    settingLabel("启用连续对话", detail: "让“去吧、继续、为什么”自然承接上一任务")
+                    settingLabel("启用连续对话", detail: "让“去吧、继续、昨天那个任务”按真实时间自然承接")
                 }
                 Divider()
                 settingRow("即时原文", detail: "较早内容仍会从本机会话归档按需检索") {
                     HStack {
-                        Slider(value: $preferences.contextTurns, in: 2...24, step: 1).frame(width: 150)
-                        Text("\(Int(preferences.contextTurns)) 轮")
+                        Slider(value: $preferences.contextTurns, in: 2...8, step: 1).frame(width: 150)
+                        Text("\(Int(preferences.contextTurns)) 条")
                             .font(.system(size: 11, design: .monospaced)).frame(width: 42)
                     }
                 }
@@ -792,7 +852,7 @@ struct SettingsView: View {
             }
             settingsCard {
                 Toggle(isOn: $preferences.persistentMemory) {
-                    settingLabel("跨启动工作记忆", detail: "保留当前任务、会话归档和相关历史检索，与永久习惯分开")
+                    settingLabel("跨启动工作记忆", detail: "保留任务创建时间、最后更新时间、会话归档与按日期检索")
                 }
                 Divider()
                 HStack {
@@ -803,8 +863,21 @@ struct SettingsView: View {
                     Spacer()
                     Button("清除…", role: .destructive) { viewState.showClearConfirmation = true }
                 }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Mac 本机经验").font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("仅保存真实操作结果、系统版本与时间；当前 \(MacExperienceStore.shared.count) 条")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("清除经验", role: .destructive) {
+                        try? MacExperienceStore.shared.clear()
+                        viewState.modelStatus = "Mac 本机经验已清除"
+                    }
+                }
             }
-            Label("采用工作记忆、任务状态、长期习惯和会话检索四层结构；全部只保存在本机，不保存录音。", systemImage: "lock.shield")
+                Label("记录文件只保存在本机且不保存录音；回答时，命中的少量记忆会发送给你当前选择的模型。", systemImage: "clock.badge.checkmark")
                 .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
         }
     }
@@ -815,12 +888,12 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("浮屿分层记忆")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                    Text("不再只靠固定聊天轮数；每层负责不同类型的信息")
+                    Text("不再只靠固定聊天轮数；时间轴贯穿每层记忆")
                         .font(.system(size: 9.5, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Label("仅本机", systemImage: "lock.fill")
+                Label("本机存储", systemImage: "lock.fill")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .foregroundStyle(.mint)
                     .padding(.horizontal, 8).padding(.vertical, 5)
@@ -831,20 +904,20 @@ struct SettingsView: View {
                     icon: "text.bubble.fill",
                     title: "即时对话",
                     detail: "承接代词、追问和短指令",
-                    status: preferences.contextEnabled ? "\(Int(preferences.contextTurns)) 轮原文" : "已关闭",
+                    status: preferences.contextEnabled ? "最近 \(Int(preferences.contextTurns)) 条" : "已关闭",
                     color: .cyan
                 )
                 memoryLayerCard(
                     icon: "scope",
                     title: "当前任务",
-                    detail: "保存目标、状态和上一轮说明",
+                    detail: "保存目标、创建时间和最后更新",
                     status: preferences.persistentMemory ? "跨重启" : "仅本次",
                     color: .blue
                 )
                 memoryLayerCard(
                     icon: "archivebox.fill",
                     title: "会话归档",
-                    detail: "较早真实原话按相关性检索",
+                    detail: "按日期与相关性检索真实原话",
                     status: preferences.persistentMemory ? "自动归档" : "暂停调用",
                     color: .indigo
                 )
@@ -854,6 +927,13 @@ struct SettingsView: View {
                     detail: "只保存你明确要求记住的偏好",
                     status: preferences.permanentHabitsEnabled ? "\(preferences.permanentHabits.count) 条" : "已关闭",
                     color: .mint
+                )
+                memoryLayerCard(
+                    icon: "laptopcomputer.and.arrow.down",
+                    title: "Mac 经验学习",
+                    detail: "按系统版本复用真实成败经验",
+                    status: "\(MacExperienceStore.shared.count) 条已验证",
+                    color: .orange
                 )
             }
         }
@@ -882,11 +962,11 @@ struct SettingsView: View {
                 HStack(spacing: 5) {
                     Text(title).font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     Text(status)
-                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
                         .foregroundStyle(color)
                 }
                 Text(detail)
-                    .font(.system(size: 8.5, design: .rounded))
+                    .font(.system(size: 9.5, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -905,13 +985,6 @@ struct SettingsView: View {
     private var advancedPage: some View {
         VStack(spacing: 14) {
             settingsCard {
-                settingRow("按住说话快捷键", detail: "按住开始聆听，松开后立即发送") {
-                    Picker("", selection: $preferences.pushToTalkShortcut) {
-                        ForEach(PushToTalkShortcut.allCases) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden().frame(width: 200)
-                }
-                Divider()
                 Toggle(isOn: $preferences.autoSubmit) {
                     settingLabel("停顿后自动发送", detail: "根据句尾和语气词判断你是否说完")
                 }
@@ -942,6 +1015,10 @@ struct SettingsView: View {
                 }
             }
             settingsCard {
+                Toggle(isOn: $preferences.autonomousMaintenance) {
+                    settingLabel("低频自主维护", detail: "每 12 小时进行一次只读本机体检；不调用模型，只有异常才提醒")
+                }
+                Divider()
                 settingRow("Siri 唤醒口令", detail: "快捷指令使用“打开 URL”，名称建议设为“开始说话”") {
                     Button("复制唤醒地址") {
                         NSPasteboard.general.clearContents()
@@ -996,7 +1073,7 @@ struct SettingsView: View {
                     Spacer()
                     Toggle("", isOn: $preferences.feishuEnabled)
                         .labelsHidden()
-                        .disabled(preferences.feishuAppID.isEmpty || !preferences.hasStoredFeishuSecret)
+                        .disabled(preferences.feishuAppID.isEmpty || preferences.feishuAllowedSenderID.isEmpty || !preferences.hasStoredFeishuSecret)
                 }
 
                 Divider()
@@ -1007,6 +1084,17 @@ struct SettingsView: View {
                     TextField("cli_xxxxxxxxxxxxxxxx", text: $preferences.feishuAppID)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("允许的发送者 Open ID")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    TextField("ou_xxxxxxxxxxxxxxxx", text: $preferences.feishuAllowedSenderID)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Text("只有这个飞书用户可以向浮屿下达指令；未配置时远程助手无法开启。")
+                        .font(.system(size: 9.5, design: .rounded))
+                        .foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -1050,18 +1138,24 @@ struct SettingsView: View {
 
     private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 13) { content() }
-            .padding(15)
+            .padding(17)
             .background(
                 LinearGradient(
                     colors: [.white.opacity(0.075), .cyan.opacity(0.025), .black.opacity(0.055)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
-                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
             )
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.1), lineWidth: 0.8) }
-            .shadow(color: .black.opacity(0.16), radius: 14, y: 7)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.16), .cyan.opacity(0.08), .white.opacity(0.035)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: 0.8
+                    )
+            }
+            .shadow(color: .black.opacity(0.19), radius: 17, y: 8)
     }
 
     private func settingLabel(_ title: String, detail: String) -> some View {
@@ -1367,7 +1461,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         runDiagnostics: @escaping () async -> String
     ) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -1375,7 +1469,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.title = "浮屿设置"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 680, height: 500)
+        window.minSize = NSSize(width: 760, height: 540)
         window.center()
         let viewState = SettingsViewState()
         window.contentView = NSHostingView(
