@@ -105,6 +105,15 @@ struct MacCareReport: Sendable {
         }.joined(separator: "\n")
         return displayText + "\n\n下一步建议：\n" + actions + "\n\n你可以直接说“按建议处理”或“暂不处理”。涉及文件修改时仍会再次确认。"
     }
+
+    var spokenSummary: String {
+        let rawConclusion = headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let conclusion = rawConclusion.count <= 42 ? rawConclusion : String(rawConclusion.prefix(40)) + "……"
+        if let recommendation = recommendations.first {
+            return "\(tool.rawValue)检查完了。\(conclusion) 建议先\(recommendation.title)，需要执行时我会再确认。"
+        }
+        return "\(tool.rawValue)检查完了。\(conclusion) 目前不用处理，详细信息在屏幕上。"
+    }
 }
 
 enum MacDiagnosticSeverity: String, Sendable, Equatable {

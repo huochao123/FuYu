@@ -85,15 +85,31 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     }
 
     func testMiMoASR() async throws -> String {
-        let audio = try await generateMiMoSpeech("你好，我是浮屿。")
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("FuYu-ASR-Smoke-\(UUID().uuidString).wav")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try audio.write(to: url, options: .atomic)
-        let transcript = try await transcribeWithMiMo(fileURL: url)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { throw VoiceOutputError.invalidResponse }
-        return "MiMo ASR 已识别：\(transcript.prefix(40))"
+        let cases: [(phrase: String, anchors: [String])] = [
+            ("浮屿，帮我打开设置。", ["浮屿", "打开", "设置"]),
+            (
+                "这是一条较长的连续语音测试，我需要确认助手能够完整听完稍长一些的命令，并且在识别结束以后正常交给人工智能继续回答。",
+                ["较长", "连续语音", "助手", "完整", "命令", "识别", "人工智能", "回答"]
+            )
+        ]
+        var results: [String] = []
+        for testCase in cases {
+            let audio = try await generateMiMoSpeech(testCase.phrase)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FuYu-ASR-Smoke-\(UUID().uuidString).wav")
+            try audio.write(to: url, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let transcript = try await transcribeWithMiMo(fileURL: url)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty else { throw VoiceOutputError.invalidResponse }
+            let anchorHits = testCase.anchors.filter(transcript.contains).count
+            let requiredHits = testCase.anchors.count <= 3 ? testCase.anchors.count : testCase.anchors.count - 2
+            guard anchorHits >= requiredHits else {
+                throw VoicePipelineTestError.inaccurateTranscript(transcript)
+            }
+            results.append("\(transcript.count)字：\(transcript)")
+        }
+        return "MiMo ASR 短句与长句均已识别（\(results.joined(separator: "、"))）"
     }
 
     func testConsecutiveListeningCycles() async throws -> String {
@@ -405,7 +421,9 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         capturedRecordingURL: URL?,
         submittedGeneration: Int
     ) async {
-        try? await Task.sleep(for: .milliseconds(320))
+        // CoreAudio only needs a brief flush after endAudio. Longer fixed
+        // waits made every successful voice turn feel sluggish.
+        try? await Task.sleep(for: .milliseconds(120))
         guard !Task.isCancelled else { return }
         var finalText = latestTranscript.isEmpty ? capturedTranscript : latestTranscript
         logger.notice("Finalizing recognition generation \(submittedGeneration); Apple characters \(finalText.count)")
@@ -414,7 +432,10 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         if preferences.recognitionEngine == .mimoHybrid,
            let capturedRecordingURL {
             do {
-                let corrected = try await transcribeWithMiMo(fileURL: capturedRecordingURL)
+                let corrected = try await transcribeWithMiMo(
+                    fileURL: capturedRecordingURL,
+                    retryOnFailure: finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
                 if !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     logger.notice("MiMo corrected recognition generation \(submittedGeneration); characters \(corrected.count)")
                     finalText = Self.preferredTranscript(apple: finalText, mimo: corrected)
@@ -432,7 +453,6 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             return
         }
         state.presentFinalRecognition(finalText)
-        try? await Task.sleep(for: .milliseconds(650))
         guard !Task.isCancelled else {
             logger.error("Recognition generation \(submittedGeneration) was cancelled before AI dispatch")
             return
@@ -685,7 +705,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return decoded
     }
 
-    private func transcribeWithMiMo(fileURL: URL) async throws -> String {
+    private func transcribeWithMiMo(fileURL: URL, retryOnFailure: Bool = true) async throws -> String {
         guard let key = KeychainStore.password(service: "codex-mimo-api-key"), !key.isEmpty else {
             throw VoiceOutputError.missingKey("MiMo")
         }
@@ -703,20 +723,71 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             ]],
             "asr_options": ["language": "auto"]
         ]
-        let data = try await requestAudio(
-            url: preferences.mimoEndpoint,
-            key: key,
-            body: body,
-            extraHeaders: ["api-key": key],
-            timeoutInterval: 6
-        )
+        let duration = Self.recordingDuration(fileURL: fileURL)
+        let timeout = Self.transcriptionTimeout(audioDuration: duration)
+        logger.notice("Submitting MiMo ASR audio duration \(duration, format: .fixed(precision: 1))s, bytes \(audioData.count), timeout \(timeout, format: .fixed(precision: 1))s")
+        let data: Data
+        do {
+            data = try await requestAudio(
+                url: preferences.mimoEndpoint,
+                key: key,
+                body: body,
+                extraHeaders: ["api-key": key],
+                timeoutInterval: timeout
+            )
+        } catch {
+            guard retryOnFailure else { throw error }
+            let retryTimeout = min(90, max(timeout + 12, timeout * 1.5))
+            logger.error("MiMo ASR first attempt failed; retrying once with timeout \(retryTimeout, format: .fixed(precision: 1))s")
+            try? await Task.sleep(for: .milliseconds(350))
+            try Task.checkCancellation()
+            data = try await requestAudio(
+                url: preferences.mimoEndpoint,
+                key: key,
+                body: body,
+                extraHeaders: ["api-key": key],
+                timeoutInterval: retryTimeout
+            )
+        }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let choices = object?["choices"] as? [[String: Any]]
         let message = choices?.first?["message"] as? [String: Any]
         guard let content = message?["content"] as? String else {
             throw VoiceOutputError.invalidResponse
         }
-        return content
+        return Self.normalizedASRTranscript(content)
+    }
+
+    nonisolated static func transcriptionTimeout(audioDuration: TimeInterval) -> TimeInterval {
+        min(90, max(18, audioDuration * 1.5 + 12))
+    }
+
+    private nonisolated static func recordingDuration(fileURL: URL) -> TimeInterval {
+        guard let file = try? AVAudioFile(forReading: fileURL),
+              file.processingFormat.sampleRate > 0 else { return 0 }
+        return Double(file.length) / file.processingFormat.sampleRate
+    }
+
+    nonisolated static func normalizedASRTranscript(_ transcript: String) -> String {
+        var result = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistantNameVariants = [
+            "福语", "浮语", "符语", "付语", "富语", "服语",
+            "福宇", "浮宇", "符宇", "付宇", "富宇", "服宇",
+            "福玉", "浮玉", "符玉", "付玉", "富玉", "服玉",
+            "福鱼", "浮鱼", "符鱼", "付鱼", "富鱼", "服鱼",
+            "福屿", "符屿", "付屿", "富屿", "服屿"
+        ]
+        if let heardName = assistantNameVariants.first(where: { result.hasPrefix($0) }) {
+            result.replaceSubrange(result.startIndex..<result.index(result.startIndex, offsetBy: heardName.count), with: "浮屿")
+        }
+        let vocabulary = [
+            "赫尔莫斯": "赫尔墨斯", "赫尔默斯": "赫尔墨斯",
+            "米墨": "MiMo", "扣代克斯": "Codex", "扣得克斯": "Codex"
+        ]
+        for (heard, intended) in vocabulary {
+            result = result.replacingOccurrences(of: heard, with: intended)
+        }
+        return result
     }
 
     private func generateOpenAISpeech(_ text: String) async throws -> Data {
@@ -802,10 +873,17 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         }
         guard microphoneAllowed else { return false }
 
-        // MiMo performs the final transcription from the recorded audio and
-        // therefore does not need Apple's separate Speech authorization.
-        // If Speech is already allowed, it is used only for live partial text.
-        if preferences.recognitionEngine == .mimoHybrid { return true }
+        // MiMo remains the final recognizer, but Apple Speech supplies live
+        // captions and a local fallback when a long cloud request fails. Ask
+        // only from an explicit voice interaction; typed chat never reaches
+        // this path. Refusal does not disable MiMo hybrid recognition.
+        if preferences.recognitionEngine == .mimoHybrid {
+            if SFSpeechRecognizer.authorizationStatus() == .notDetermined,
+               state.interactionSource == .voice {
+                _ = await Self.requestSpeechAuthorization()
+            }
+            return true
+        }
 
         let speechAllowed: Bool
         switch SFSpeechRecognizer.authorizationStatus() {
@@ -1322,6 +1400,7 @@ private enum VoiceOutputError: LocalizedError {
 private enum VoicePipelineTestError: LocalizedError {
     case noAudioBuffers(cycle: Int)
     case submissionNotDispatched(cycle: Int)
+    case inaccurateTranscript(String)
     case microphonePermissionMissing
     case invalidInputFormat
 
@@ -1331,6 +1410,8 @@ private enum VoicePipelineTestError: LocalizedError {
             "第 \(cycle) 轮麦克风没有返回音频缓冲。"
         case let .submissionNotDispatched(cycle):
             "第 \(cycle) 轮最终文字没有送交 AI。"
+        case let .inaccurateTranscript(text):
+            "语音识别返回了文字，但关键内容不准确：\(text)"
         case .microphonePermissionMissing:
             "麦克风权限尚未允许。"
         case .invalidInputFormat:

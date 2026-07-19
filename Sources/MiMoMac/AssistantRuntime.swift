@@ -711,7 +711,7 @@ final class AssistantRuntime {
                     title: "电脑管家 · \(tool.rawValue)", result: report.displayText,
                     succeeded: true, profile: self.preferences.profile
                 )
-                self.deliverReply(report.conversationText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+                self.deliverReply(report.conversationText, suggestedSpoken: report.spokenSummary, shouldSpeak: shouldSpeak)
             } catch is CancellationError {
                 self.state.finishBackgroundJob(jobID, summary: "已取消", failed: true)
             } catch {
@@ -794,7 +794,7 @@ final class AssistantRuntime {
                     self.state.recordAssistantMessage("后台任务已完成：\(pending.title)\n\(report.displayText)")
                     self.resumeVoiceIfExecutionCardIsVisible()
                 } else {
-                    self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: pending.shouldSpeak)
+                    self.deliverReply(report.displayText, suggestedSpoken: report.spokenSummary, shouldSpeak: pending.shouldSpeak)
                 }
             } catch is CancellationError {
                 return

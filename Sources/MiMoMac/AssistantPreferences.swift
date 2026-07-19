@@ -745,7 +745,7 @@ final class AssistantPreferences: ObservableObject {
             }
             return "我收到了一段技术信息，已经整理在屏幕上了。"
         }
-        if allowSummary, value.count > 52 { return smartSpeechSummary(value) }
+        if allowSummary, value.count > 78 { return smartSpeechSummary(value) }
         return value
     }
 
@@ -776,7 +776,7 @@ final class AssistantPreferences: ObservableObject {
             let linkOnlyPhrases = ["详情见", "查看链接", "请看链接", "网址", "链接"]
             if linkOnlyPhrases.contains(value) { return nil }
         }
-        return value.count <= 44 ? value : String(value.prefix(42)) + "……"
+        return value.count <= 70 ? value : String(value.prefix(68)) + "……"
     }
 
     private func modelKey(_ field: String) -> String { "assistantModel.\(modelProvider.rawValue).\(field)" }
@@ -789,7 +789,7 @@ final class AssistantPreferences: ObservableObject {
 
     private func isSuitableForSpeech(_ text: String) -> Bool {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, value.count <= 52 else { return false }
+        guard !value.isEmpty, value.count <= 78 else { return false }
         let blocked = ["http://", "https://", "```", "|", "•", "\n- ", "\n1."]
         return !blocked.contains(where: value.contains) && value.filter(\.isNewline).count <= 1
     }

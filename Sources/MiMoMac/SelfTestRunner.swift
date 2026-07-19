@@ -184,6 +184,29 @@ enum SelfTestRunner {
                 && !technicalSpeech.contains("2439430414761153758"),
             "语音审校过滤链接、ID 和英文追踪码"
         )
+        let spokenReport = MacCareReport(
+            tool: .batteryHealth,
+            headline: "电池健康正常，但有一个进程持续高负载，可能增加发热和耗电。",
+            details: ["PID 12345，CPU 98.2%，循环次数 20"],
+            recommendations: [.init(
+                title: "核对高负载应用",
+                benefit: "降低发热与耗电",
+                risk: "关闭前需要保存内容",
+                buttonTitle: "打开活动监视器",
+                action: .openActivityMonitor
+            )]
+        )
+        let spokenReportText = preferences.spokenText(
+            fullText: spokenReport.conversationText,
+            suggested: spokenReport.spokenSummary
+        ) ?? ""
+        check(
+            spokenReportText.contains("电池健康正常")
+                && spokenReportText.contains("核对高负载应用")
+                && !spokenReportText.contains("PID")
+                && !spokenReportText.contains("98.2"),
+            "检测结果语音保留结论和下一步但不朗读参数"
+        )
         check(ModelProvider.allCases.count == 10, "主流模型服务预设")
         check(SpeechEngine.allCases.count == 4 && MiMoVoice.allCases.count == 8, "语音引擎与 MiMo 音色预设")
         check(RecognitionEngine.allCases.count == 3, "本地、自动与混合语音识别预设")
@@ -509,6 +532,19 @@ enum SelfTestRunner {
             VoiceService.automaticSubmissionBaseSeconds(configured: 2.8, continuousFollowUp: false) == 2.8
                 && VoiceService.automaticSubmissionBaseSeconds(configured: 2.8, continuousFollowUp: true) == 4.0,
             "连续对话第二轮增加停顿余量避免话没说完就提交"
+        )
+        check(
+            VoiceService.transcriptionTimeout(audioDuration: 3) == 18
+                && VoiceService.transcriptionTimeout(audioDuration: 20) == 42
+                && VoiceService.transcriptionTimeout(audioDuration: 100) == 90,
+            "MiMo 长语音超时会随录音时长增加并设安全上限"
+        )
+        check(
+            VoiceService.normalizedASRTranscript("服语，打开 Finder") == "浮屿，打开 Finder"
+                && VoiceService.normalizedASRTranscript("我认识一个叫符鱼的人") == "我认识一个叫符鱼的人"
+                && VoiceService.normalizedASRTranscript("交给赫尔莫斯") == "交给赫尔墨斯"
+                && VoiceService.normalizedASRTranscript("赋予应用权限") == "赋予应用权限",
+            "语音专有词纠正常见误识别且不改普通词义"
         )
         check(
             VoiceService.shouldRestoreOutputVolumeAfterListening(original: 22, observed: 11)

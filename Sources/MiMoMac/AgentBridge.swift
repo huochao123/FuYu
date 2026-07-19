@@ -99,7 +99,7 @@ actor MiMoAssistantClient {
         \(AgentToolRegistry.modelPrompt)
         你必须只输出一个 JSON 对象，不要使用 Markdown。
         如果用户只是询问、聊天或需要解释，输出：
-        {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的一句自然短话，最多40字；除纯代码或纯链接外必须填写"}
+        {"kind":"reply","reply":"屏幕上显示的完整回答","spokenReply":"适合说出口的自然摘要，25到60字；普通聊天保留核心意思，检测结果说结论、影响和下一步，执行结果说成败与关键结果，错误说原因与可行下一步；不得朗读参数列表；除纯代码或纯链接外必须填写"}
         生成 reply 前自检：若把角色名称删除后，回答仍像任意普通助手都能说出的客套话，说明人格不合格，必须重写；但不得为了表现人格而增加虚构事实或弱化安全信息。
         如果需要调用浮屿本机工具，输出：
         {"kind":"tool","tool":"工具 ID","arguments":{"参数名":"字符串值"}}
@@ -248,8 +248,8 @@ actor MiMoAssistantClient {
         let systemPrompt = """
         把工具或助手返回结果改写成一句像真人说的自然中文，用于语音播报。
         只输出要说的话，不要 JSON、Markdown、列表或前缀。
-        15 到 42 个汉字，先说结论；不要朗读网址、会议号、ID、追踪码、英文参数、文件路径或长数字。
-        必要时说“详细信息我放在屏幕上了”。失败就自然说明失败，不得把失败改成成功。
+        25 到 70 个汉字，先说结论；检测结果保留严重程度、最关键影响和下一步，执行结果保留成败与关键结果，错误保留原因和可行下一步。
+        不要朗读网址、会议号、ID、追踪码、英文参数、文件路径、长数字或整段参数列表。必要时说“详细信息我放在屏幕上了”。失败不得改成成功，也不能只说“检测完成”而不给结论。
         保持下面的人格和表达方式，但不要添加虚构事实：
         \(profile.personaPrompt)
         """
@@ -270,7 +270,7 @@ actor MiMoAssistantClient {
         }
         value = value.replacingOccurrences(of: "https?://\\S+", with: "", options: .regularExpression)
         value = value.replacingOccurrences(of: "[A-Za-z0-9_-]{10,}", with: "", options: .regularExpression)
-        return String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        return String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(78))
     }
 
     func clearMemory() throws {
