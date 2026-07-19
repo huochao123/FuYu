@@ -13,13 +13,14 @@ enum VoiceReplyPolicy: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum RecognitionEngine: String, CaseIterable, Identifiable, Sendable {
-    case appleLocal, appleAutomatic, mimoHybrid
+    case appleLocal, appleAutomatic, mimoHybrid, voiceboxLocal
     var id: String { rawValue }
     var title: String {
         switch self {
         case .appleLocal: "Apple 本地识别"
         case .appleAutomatic: "Apple 自动识别"
         case .mimoHybrid: "MiMo 在线校正（推荐）"
+        case .voiceboxLocal: "Voicebox 本地识别（推荐）"
         }
     }
 }
@@ -144,7 +145,7 @@ enum SpeechEngine: String, CaseIterable, Identifiable, Sendable {
         case .system: "系统语音（免费离线）"
         case .mimo: "MiMo 云端语音（推荐）"
         case .openAI: "OpenAI 自然语音"
-        case .localClone: "本地声音克隆（预留）"
+        case .localClone: "Voicebox 本地语音（推荐）"
         }
     }
 }
@@ -355,6 +356,8 @@ final class AssistantPreferences: ObservableObject {
         static let feishuAppID = "assistantFeishuAppID"
         static let feishuAllowedSenderID = "assistantFeishuAllowedSenderID"
         static let autonomousMaintenance = "assistantAutonomousMaintenance"
+        static let voiceboxASRModel = "assistantVoiceboxASRModel"
+        static let voiceboxTTSModel = "assistantVoiceboxTTSModel"
     }
 
     @Published var voicePolicy: VoiceReplyPolicy { didSet { defaults.set(voicePolicy.rawValue, forKey: Key.voicePolicy) } }
@@ -386,6 +389,8 @@ final class AssistantPreferences: ObservableObject {
     @Published var speechInstructions: String { didSet { defaults.set(String(speechInstructions.prefix(500)), forKey: Key.speechInstructions) } }
     @Published var speechFallback: Bool { didSet { defaults.set(speechFallback, forKey: Key.speechFallback) } }
     @Published var localCloneEndpoint: String { didSet { defaults.set(localCloneEndpoint, forKey: Key.localCloneEndpoint) } }
+    @Published var voiceboxASRModel: String { didSet { defaults.set(voiceboxASRModel, forKey: Key.voiceboxASRModel) } }
+    @Published var voiceboxTTSModel: String { didSet { defaults.set(voiceboxTTSModel, forKey: Key.voiceboxTTSModel) } }
     @Published var recognitionEngine: RecognitionEngine { didSet { defaults.set(recognitionEngine.rawValue, forKey: Key.recognitionEngine) } }
     @Published var endPauseSeconds: Double { didSet { defaults.set(endPauseSeconds, forKey: Key.endPauseSeconds) } }
     @Published var continuousConversation: Bool { didSet { defaults.set(continuousConversation, forKey: Key.continuousConversation) } }
@@ -440,10 +445,15 @@ final class AssistantPreferences: ObservableObject {
         systemVoiceIdentifier = defaults.string(forKey: Key.systemVoiceIdentifier) ?? ""
         openAIVoice = OpenAIVoice(rawValue: defaults.string(forKey: Key.openAIVoice) ?? "marin") ?? .marin
         mimoVoice = MiMoVoice(rawValue: defaults.string(forKey: Key.mimoVoice) ?? "冰糖") ?? .bingtang
-        clonedVoiceID = defaults.string(forKey: Key.clonedVoiceID) ?? ""
+        clonedVoiceID = defaults.string(forKey: Key.clonedVoiceID) ?? "浮屿 · 冰糖"
         speechInstructions = defaults.string(forKey: Key.speechInstructions) ?? "用自然、温柔、有亲和力的中文说话，像真实的语音助手，不要播音腔。"
         speechFallback = defaults.object(forKey: Key.speechFallback) as? Bool ?? true
-        localCloneEndpoint = defaults.string(forKey: Key.localCloneEndpoint) ?? "http://127.0.0.1:9880/tts"
+        let storedLocalEndpoint = defaults.string(forKey: Key.localCloneEndpoint)
+        localCloneEndpoint = storedLocalEndpoint == nil || storedLocalEndpoint == "http://127.0.0.1:9880/tts"
+            ? "http://127.0.0.1:17493"
+            : storedLocalEndpoint!
+        voiceboxASRModel = defaults.string(forKey: Key.voiceboxASRModel) ?? "small"
+        voiceboxTTSModel = defaults.string(forKey: Key.voiceboxTTSModel) ?? "0.6B"
         recognitionEngine = RecognitionEngine(rawValue: defaults.string(forKey: Key.recognitionEngine) ?? "mimoHybrid") ?? .mimoHybrid
         endPauseSeconds = min(max(defaults.object(forKey: Key.endPauseSeconds) as? Double ?? 2.3, 1.2), 5)
         continuousConversation = defaults.object(forKey: Key.continuousConversation) as? Bool ?? false

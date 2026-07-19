@@ -5,7 +5,7 @@
   <p>原生语音助手、本机电脑管家与可控 Agent，统一在一个有反馈、有记忆、有安全边界的 macOS 工作台里。</p>
 
   <p>
-    <img alt="Version 0.9.3" src="https://img.shields.io/badge/version-0.9.3-0F766E">
+    <img alt="Version 0.10.0" src="https://img.shields.io/badge/version-0.10.0-0F766E">
     <img alt="macOS 15+" src="https://img.shields.io/badge/macOS-15%2B-111827?logo=apple&logoColor=white">
     <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-native-2563EB">
     <img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white">
@@ -43,13 +43,14 @@
 
 ### 语音：从“对讲机”变成连续对话
 
-- 支持 Apple 本地识别、自动识别与 MiMo 混合校正。
+- 支持 Voicebox 本地 Whisper、Apple 本地识别、自动识别与 MiMo 混合校正；Voicebox 不可用时会保留现场文字并按配置回退。
 - 长按 Fn / 地球键约 0.3 秒开始说话，轻触不会误启动收音。
 - 连续会话不会因为静默、普通错误、后台任务或临时卡片自动结束；只有手动停止或明确说“结束对话”“关闭对话”“语音取消”才退出。
 - 每一轮都显示“等待声音 → 实时识别 → 正在校正 → 最终文字”，长句也会等待完整识别。
 - 支持打断播报、双击悬浮入口取消误识别，以及下一轮自动恢复收音。
 - 语音回复经过独立筛选：朗读结论、关键影响和下一步；参数、路径、ID 与长数字留在屏幕上。
 - 文字、语音、通知三条交互链严格分开：打字不会启动麦克风或悬浮语音窗。
+- Apple Silicon 可选安装 Voicebox 本地语音包：Whisper Small 负责识别，Qwen TTS 0.6B 使用“浮屿 · 冰糖”本机档案发声；原 MiMo“冰糖”和系统语音按顺序兜底。
 
 <p align="center">
   <img src="docs/images/voice-bubble.png" alt="浮屿语音悬浮窗" width="46%">
@@ -135,6 +136,7 @@ flowchart LR
 - macOS 15 或更高版本
 - Apple Silicon Mac
 - 使用云端模型、MiMo ASR 或云端语音时，需要对应服务的 API 密钥
+- 本地 Voicebox 模式需要安装 Voicebox；浮屿会在首次使用本地语音时后台启动它，模型约占 3.3 GB 磁盘空间
 - Hermes 仅在需要复杂跨应用控制时安装
 
 ### 安装
@@ -192,6 +194,8 @@ scripts/create-installer.sh
 .build/debug/MiMoMac --voice-cycle-smoke-test
 .build/debug/MiMoMac --voice-dispatch-smoke-test
 .build/debug/MiMoMac --mimo-asr-smoke-test
+.build/debug/MiMoMac --voicebox-smoke-test
+.build/debug/MiMoMac --voicebox-asr-file-test /path/to/long-recording.wav
 ```
 
 ## 开源组件与参考
@@ -199,6 +203,7 @@ scripts/create-installer.sh
 - 清理扫描、安全路径校验、移到废纸篓和日志能力集成自 [Dusty CleanerEngine](https://github.com/yagcioglutoprak/dusty)（MIT）。
 - 实时状态与低频采样的产品设计参考 [Stats](https://github.com/exelban/stats)，浮屿使用自己的采样和持续高负载判断。
 - [Mole](https://github.com/tw93/mole) 仅作为产品与安全边界参考，没有合并其 GPLv3 代码。
+- 本地识别、声音克隆与生成通过 [Voicebox](https://github.com/jamiepine/voicebox)（MIT）接入；浮屿保留 MiMo 与系统语音回退，不将 Voicebox 变成聊天或 Agent 中转层。
 
 第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。欢迎提交 [Issue](https://github.com/huochao123/FuYu/issues)；参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
@@ -210,7 +215,7 @@ scripts/create-installer.sh
 
 ### Highlights
 
-- Continuous voice interaction with visible partial/final transcripts, interruption, explicit hang-up, and long-speech MiMo correction.
+- Continuous voice interaction with local Voicebox Whisper/Qwen support, visible partial/final transcripts, interruption, explicit hang-up, and MiMo/system fallback.
 - Thirteen native Mac care tools for health, storage, files, apps, battery, permissions, thermal processes, and incident snapshots.
 - Local-first routing for simple Mac actions; optional Hermes delegation only for complex cross-app work.
 - Shared context between Mac Care results and chat, with timestamps, task state, relevant history, and on-demand Mac Skills.

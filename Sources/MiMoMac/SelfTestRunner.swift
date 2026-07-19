@@ -209,7 +209,7 @@ enum SelfTestRunner {
         )
         check(ModelProvider.allCases.count == 10, "主流模型服务预设")
         check(SpeechEngine.allCases.count == 4 && MiMoVoice.allCases.count == 8, "语音引擎与 MiMo 音色预设")
-        check(RecognitionEngine.allCases.count == 3, "本地、自动与混合语音识别预设")
+        check(RecognitionEngine.allCases.count == 4, "Apple、MiMo 与 Voicebox 语音识别预设")
         check(FloatingSkin.allCases.count == 6 && preferences.floatingSkin == .particleFrame, "六种悬浮入口皮肤")
         check(FloatingPlacement.allCases.count == 3 && preferences.floatingPlacement == .notch, "刘海下方默认位置")
         check(!preferences.showDockIcon, "程序坞图标默认保持关闭")
@@ -539,11 +539,21 @@ enum SelfTestRunner {
                 && VoiceService.transcriptionTimeout(audioDuration: 100) == 90,
             "MiMo 长语音超时会随录音时长增加并设安全上限"
         )
+        let largeRecordingFrames = VoiceService.miMoChunkFrameCount(
+            totalFrames: 1_920_000,
+            fileBytes: 25_000_000
+        )
         check(
-            VoiceService.normalizedASRTranscript("服语，打开 Finder") == "浮屿，打开 Finder"
+            largeRecordingFrames > 0 && largeRecordingFrames < 500_000,
+            "高码率长录音会按完整音频帧切成安全请求大小"
+        )
+        check(
+            VoiceService.normalizedASRTranscript("傅宇，打开 Finder") == "浮屿，打开 Finder"
+                && VoiceService.normalizedASRTranscript("福羽，检查发热") == "浮屿，检查发热"
                 && VoiceService.normalizedASRTranscript("我认识一个叫符鱼的人") == "我认识一个叫符鱼的人"
                 && VoiceService.normalizedASRTranscript("交给赫尔莫斯") == "交给赫尔墨斯"
-                && VoiceService.normalizedASRTranscript("赋予应用权限") == "赋予应用权限",
+                && VoiceService.normalizedASRTranscript("赋予应用权限") == "赋予应用权限"
+                && VoiceService.normalizedASRTranscript("浮屿，继续等待。词词词词词") == "浮屿，继续等待。",
             "语音专有词纠正常见误识别且不改普通词义"
         )
         check(
