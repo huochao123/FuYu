@@ -184,6 +184,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runVoiceSmokeTest()
         } else if CommandLine.arguments.contains("--voice-cycle-smoke-test") {
             runVoiceCycleSmokeTest()
+        } else if CommandLine.arguments.contains("--voice-dispatch-smoke-test") {
+            runVoiceDispatchSmokeTest()
         } else if CommandLine.arguments.contains("--model-smoke-test") {
             Task { @MainActor [weak self] in
                 guard let self else { exit(1) }
@@ -222,6 +224,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     exit(0)
                 } catch {
                     fputs("浮屿识别连接测试失败：\(error.localizedDescription)\n", stderr)
+                    self.shortcutMonitor?.stop()
+                    exit(1)
+                }
+            }
+        } else if CommandLine.arguments.contains("--audio-chunk-smoke-test") {
+            do {
+                print("浮屿长录音切分测试通过：\(try voiceService.testLargeRecordingChunking())")
+                shortcutMonitor?.stop()
+                exit(0)
+            } catch {
+                print("浮屿长录音切分测试失败：\(error.localizedDescription)")
+                shortcutMonitor?.stop()
+                exit(1)
+            }
+        } else if let argumentIndex = CommandLine.arguments.firstIndex(of: "--mimo-asr-file-test"),
+                  CommandLine.arguments.indices.contains(argumentIndex + 1) {
+            let fileURL = URL(fileURLWithPath: CommandLine.arguments[argumentIndex + 1])
+            Task { @MainActor [weak self] in
+                guard let self, let voiceService = self.voiceService else { exit(1) }
+                do {
+                    print("浮屿长录音识别测试通过：\(try await voiceService.testMiMoASR(fileURL: fileURL))")
+                    self.shortcutMonitor?.stop()
+                    exit(0)
+                } catch {
+                    print("浮屿长录音识别测试失败：\(error.localizedDescription)")
+                    self.shortcutMonitor?.stop()
+                    exit(1)
+                }
+            }
+        } else if CommandLine.arguments.contains("--voicebox-smoke-test") {
+            Task { @MainActor [weak self] in
+                guard let self, let voiceService = self.voiceService else { exit(1) }
+                do {
+                    let health = try await voiceService.testVoiceboxHealth()
+                    let speech = try await voiceService.testVoiceboxSpeech()
+                    print("浮屿 Voicebox 测试通过：\(health)；\(speech)")
+                    self.shortcutMonitor?.stop()
+                    exit(0)
+                } catch {
+                    print("浮屿 Voicebox 测试失败：\(error.localizedDescription)")
+                    self.shortcutMonitor?.stop()
+                    exit(1)
+                }
+            }
+        } else if let argumentIndex = CommandLine.arguments.firstIndex(of: "--mimo-tts-file-test"),
+                  CommandLine.arguments.indices.contains(argumentIndex + 1) {
+            let fileURL = URL(fileURLWithPath: CommandLine.arguments[argumentIndex + 1])
+            Task { @MainActor [weak self] in
+                guard let self, let voiceService = self.voiceService else { exit(1) }
+                do {
+                    let script = "你好，我是浮屿。今后我会认真听清你的每一句话，也会照看这台 Mac 的运行状态。遇到问题别着急，我会先说明原因、影响和处理办法，再由你决定是否执行。"
+                    print("浮屿 MiMo 音色导出通过：\(try await voiceService.exportMiMoSpeech(script, to: fileURL))")
+                    self.shortcutMonitor?.stop()
+                    exit(0)
+                } catch {
+                    print("浮屿 MiMo 音色导出失败：\(error.localizedDescription)")
+                    self.shortcutMonitor?.stop()
+                    exit(1)
+                }
+            }
+        } else if let argumentIndex = CommandLine.arguments.firstIndex(of: "--voicebox-asr-file-test"),
+                  CommandLine.arguments.indices.contains(argumentIndex + 1) {
+            let fileURL = URL(fileURLWithPath: CommandLine.arguments[argumentIndex + 1])
+            Task { @MainActor [weak self] in
+                guard let self, let voiceService = self.voiceService else { exit(1) }
+                do {
+                    print("浮屿 Voicebox 识别测试通过：\(try await voiceService.testVoiceboxASR(fileURL: fileURL))")
+                    self.shortcutMonitor?.stop()
+                    exit(0)
+                } catch {
+                    print("浮屿 Voicebox 识别测试失败：\(error.localizedDescription)")
                     self.shortcutMonitor?.stop()
                     exit(1)
                 }
@@ -420,6 +493,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 try? "FAIL\n\(error.localizedDescription)".write(to: resultURL, atomically: true, encoding: .utf8)
                 fputs("浮屿连续语音自检失败：\(error.localizedDescription)\n", stderr)
+                self.shortcutMonitor?.stop()
+                exit(1)
+            }
+        }
+    }
+
+    private func runVoiceDispatchSmokeTest() {
+        Task { @MainActor [weak self] in
+            guard let self, let voiceService = self.voiceService else { exit(1) }
+            do {
+                let result = try await voiceService.testConsecutiveSubmissionDispatches()
+                print("浮屿连续提交自检通过：\(result)")
+                self.shortcutMonitor?.stop()
+                exit(0)
+            } catch {
+                fputs("浮屿连续提交自检失败：\(error.localizedDescription)\n", stderr)
                 self.shortcutMonitor?.stop()
                 exit(1)
             }

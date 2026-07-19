@@ -384,7 +384,7 @@ struct SettingsView: View {
                     .labelsHidden().frame(width: 220)
                 }
                 Divider()
-                settingRow("语音识别", detail: "MiMo 模式保留实时字幕，并在发送前校正文字") {
+                settingRow("语音识别", detail: "Voicebox 本地优先；不可用时可回退 MiMo") {
                     Picker("", selection: $preferences.recognitionEngine) {
                         ForEach(RecognitionEngine.allCases) { Text($0.title).tag($0) }
                     }
@@ -462,11 +462,62 @@ struct SettingsView: View {
             }
         case .localClone:
             VStack(alignment: .leading, spacing: 9) {
-                Text("本地克隆服务地址").font(.system(size: 12, weight: .semibold, design: .rounded))
-                TextField("http://127.0.0.1:9880/tts", text: $preferences.localCloneEndpoint)
+                HStack {
+                    Text("Voicebox 本地服务").font(.system(size: 12, weight: .semibold, design: .rounded))
+                    Spacer()
+                    Button("检测服务") { testVoiceboxService() }
+                    Button("打开 Voicebox") {
+                        NSWorkspace.shared.openApplication(
+                            at: URL(fileURLWithPath: "/Applications/Voicebox.app"),
+                            configuration: .init()
+                        )
+                    }
+                }
+                TextField("http://127.0.0.1:17493", text: $preferences.localCloneEndpoint)
                     .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
-                Text("接口已预留：POST JSON，返回 WAV。以后可接 CosyVoice 或 GPT-SoVITS 适配器。")
+                settingRow("声音档案", detail: "可填写 Voicebox 中的档案名称；留空时使用第一个") {
+                    TextField("浮屿 · 冰糖", text: $preferences.clonedVoiceID)
+                        .textFieldStyle(.roundedBorder).frame(width: 220)
+                }
+                settingRow("本地识别模型", detail: "Small 适合 M5 16GB，准确率与占用更均衡") {
+                    Picker("", selection: $preferences.voiceboxASRModel) {
+                        Text("Whisper Base · 最轻").tag("base")
+                        Text("Whisper Small · 推荐").tag("small")
+                        Text("Whisper Medium · 更准确").tag("medium")
+                    }
+                    .labelsHidden().frame(width: 220)
+                }
+                settingRow("本地声音模型", detail: "0.6B 优先保证响应速度；1.7B 更重") {
+                    Picker("", selection: $preferences.voiceboxTTSModel) {
+                        Text("Qwen 0.6B · 推荐").tag("0.6B")
+                        Text("Qwen 1.7B · 高品质").tag("1.7B")
+                    }
+                    .labelsHidden().frame(width: 220)
+                }
+                Text("Voicebox 未启动、模型未下载或生成失败时，浮屿会自动使用原有本机／MiMo 后备链路。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func testVoiceboxService() {
+        viewState.voiceStatus = "正在检测 Voicebox…"
+        Task { @MainActor in
+            do {
+                let base = preferences.localCloneEndpoint
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                guard let url = URL(string: base + "/health") else {
+                    throw VoiceboxClientError.invalidEndpoint
+                }
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                      let health = try? JSONDecoder().decode(VoiceboxHealth.self, from: data) else {
+                    throw VoiceboxClientError.unavailable
+                }
+                viewState.voiceStatus = "Voicebox 已连接 · \(health.gpuType ?? "本机计算") · \(health.backendType ?? "本地后端")"
+            } catch {
+                viewState.voiceStatus = "Voicebox 未连接：\(error.localizedDescription)"
             }
         }
     }

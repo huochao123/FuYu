@@ -119,14 +119,18 @@ final class AssistantRuntime {
         } else {
             state.recordActionStatus("用户通过语音取消了操作", failed: true)
             cancelCurrentWork()
-            state.resetToIdle(message: "操作已取消")
+            continueVoiceConversation(after: "操作已取消，对话仍在继续。")
         }
     }
 
     private func handleUserInput(_ text: String, shouldSpeak: Bool, isVoice: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else {
-            state.presentError("没有听清，请再说一次。")
+            if isVoice, state.voiceSessionActive {
+                continueVoiceConversation(after: "没有听清，我还在，请再说一次。")
+            } else {
+                state.presentError("没有听清，请再说一次。")
+            }
             return
         }
 
@@ -137,7 +141,11 @@ final class AssistantRuntime {
             if denyPhrases.contains(where: compact.contains) {
                 state.recordActionStatus(isVoice ? "用户通过语音取消了操作" : "用户通过文字取消了操作", failed: true)
                 cancelCurrentWork()
-                state.resetToIdle(message: "操作已取消")
+                if isVoice, state.voiceSessionActive {
+                    continueVoiceConversation(after: "操作已取消，对话仍在继续。")
+                } else {
+                    state.resetToIdle(message: "操作已取消")
+                }
                 return
             }
             if approvePhrases.contains(where: compact.contains) {
@@ -317,7 +325,23 @@ final class AssistantRuntime {
                     self.deliverReply(text, suggestedSpoken: spoken, shouldSpeak: shouldSpeak)
                 case let .tool(call):
                     guard let localCommand = AgentToolRegistry.localCommand(for: call) else {
-                        self.state.presentError("浮屿没有识别出这个本机工具的参数，未执行任何操作。")
+                        self.presentRecoverableFailure(
+                            "浮屿没有识别出这个本机工具的参数，未执行任何操作。",
+                            shouldSpeak: shouldSpeak
+                        )
+                        return
+                    }
+                    if case let .scan(tool) = localCommand,
+                       let recent = self.state.latestMacDiagnosticFindings[tool],
+                       Date().timeIntervalSince(recent.detectedAt) < 90,
+                       !Self.explicitlyRequestsRefresh(effectiveRequest) {
+                        let evidence = recent.evidence.prefix(3).joined(separator: "；")
+                        self.state.recordActionStatus("没有重复扫描：\(tool.rawValue)在 90 秒内已有结果")
+                        self.deliverReply(
+                            "我没有再重复扫描。刚才的\(tool.rawValue)结果仍然有效：\(recent.summary)\n证据：\(evidence.isEmpty ? "已保留在状态屏" : evidence)\n影响：\(recent.impact)\n下一步：\(recent.nextStep)",
+                            suggestedSpoken: "刚才的结果仍然有效，我没有重复扫描。",
+                            shouldSpeak: shouldSpeak
+                        )
                         return
                     }
                     self.state.recordActionStatus("浮屿选择本机工具：\(call.id.rawValue)")
@@ -332,7 +356,7 @@ final class AssistantRuntime {
                             succeeded: false,
                             profile: self.preferences.profile
                         )
-                        self.state.presentError(message)
+                        self.presentRecoverableFailure(message, shouldSpeak: shouldSpeak)
                         return
                     }
                     if Self.requiresPlanReview(userText: effectiveRequest) {
@@ -382,7 +406,7 @@ final class AssistantRuntime {
                 // action produced two nearly identical cards for one timeout.
                 self.deliverReply(message, suggestedSpoken: "模型响应超时，本机工具仍然可以直接使用。", shouldSpeak: shouldSpeak)
             } catch {
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
     }
@@ -441,6 +465,10 @@ final class AssistantRuntime {
 
     static func missingCriticalDetailsQuestion(for userText: String) -> String? {
         let value = userText.lowercased()
+        if LocalCommandRouter.isNarrativeOrQuotedContent(value)
+            || LocalCommandRouter.isDiscussionAboutContent(value) {
+            return nil
+        }
         let hasNumber = value.unicodeScalars.contains { (48...57).contains($0.value) }
         if value.contains("亮度"),
            !hasNumber, !["调高", "调低", "最高", "最低", "增加", "降低"].contains(where: value.contains) {
@@ -519,8 +547,8 @@ final class AssistantRuntime {
         }
         return [
             "结束对话", "关闭对话", "停止对话", "退出对话",
-            "结束聊天", "关闭聊天", "结束语音", "关闭语音", "退出语音",
-            "结束通话", "关闭通话", "挂断", "挂断电话"
+            "结束聊天", "关闭聊天", "结束语音", "关闭语音", "退出语音", "语音取消", "取消语音", "取消语音对话",
+            "结束通话", "关闭通话", "取消通话", "挂断", "挂断电话"
         ].contains(compact)
     }
 
@@ -528,6 +556,11 @@ final class AssistantRuntime {
         let firstLine = title.split(whereSeparator: \.isNewline).first.map(String.init) ?? title
         let value = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? "执行 Mac 操作" : String(value.prefix(28))
+    }
+
+    static func explicitlyRequestsRefresh(_ text: String) -> Bool {
+        let value = text.lowercased()
+        return ["再查", "重新查", "重新检查", "再扫描", "刷新", "现在再看", "再检测一次"].contains(where: value.contains)
     }
 
     func cancelCurrentWork() {
@@ -640,10 +673,11 @@ final class AssistantRuntime {
                 case .capabilities:
                     let capabilities = await LocalMacCapabilityManifest.current()
                     let brightness = capabilities.brightnessAvailable ? "屏幕亮度" : "亮度能力检测（当前屏幕不支持直接控制）"
+                    let toolNames = MacCareTool.allCases.map(\.rawValue).joined(separator: "、")
                     let reply = """
                     我是浮屿 FuYu，一款以这台 Mac 为核心的本机智能助手。
 
-                    我能直接在本机完成九项电脑管家检测、音量与静音控制、\(brightness)，并持续监测异常发热进程。电脑管家的检测结果会同步给我，所以你可以直接接着问“有什么问题”或“执行哪条建议”。
+                    当前版本能直接在本机完成 \(MacCareTool.allCases.count) 项工具：\(toolNames)。另外支持音量与静音控制、\(brightness)，并持续监测异常发热进程。电脑管家的检测结果会同步给我，所以你可以直接接着问“有什么问题”或“执行哪条建议”。
 
                     只读检查和可逆设置优先由我自己完成，不经过 Hermes；跨应用的复杂任务才交给 Hermes。清理、移动、删除、发送或修改安全设置前，我会先说明收益和风险并等你确认。
                     """
@@ -654,7 +688,7 @@ final class AssistantRuntime {
             } catch {
                 self.state.markTaskFocus(.failed)
                 self.state.recordActionStatus("浮屿本机执行失败：\(error.localizedDescription)", failed: true)
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
     }
@@ -677,12 +711,12 @@ final class AssistantRuntime {
                     title: "电脑管家 · \(tool.rawValue)", result: report.displayText,
                     succeeded: true, profile: self.preferences.profile
                 )
-                self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+                self.deliverReply(report.conversationText, suggestedSpoken: report.spokenSummary, shouldSpeak: shouldSpeak)
             } catch is CancellationError {
                 self.state.finishBackgroundJob(jobID, summary: "已取消", failed: true)
             } catch {
                 self.state.finishBackgroundJob(jobID, summary: error.localizedDescription, failed: true)
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
         readOnlyTasks[jobID] = task
@@ -727,7 +761,7 @@ final class AssistantRuntime {
 
     private func executeApprovedLocalAction(approvalID: UUID) {
         guard let pending = pendingLocalAction, pending.approvalID == approvalID else {
-            state.presentError("本机操作的确认信息已失效，请重新检测。")
+            presentRecoverableFailure("本机操作的确认信息已失效，请重新检测。", shouldSpeak: state.voiceSessionActive)
             return
         }
         pendingLocalAction = nil
@@ -760,7 +794,7 @@ final class AssistantRuntime {
                     self.state.recordAssistantMessage("后台任务已完成：\(pending.title)\n\(report.displayText)")
                     self.resumeVoiceIfExecutionCardIsVisible()
                 } else {
-                    self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: pending.shouldSpeak)
+                    self.deliverReply(report.displayText, suggestedSpoken: report.spokenSummary, shouldSpeak: pending.shouldSpeak)
                 }
             } catch is CancellationError {
                 return
@@ -820,7 +854,7 @@ final class AssistantRuntime {
 
     private func executeApprovedAction(approvalID: UUID) {
         guard let action = pendingAction, action.approvalID == approvalID else {
-            state.presentError("批准信息已失效，请重新说一次。")
+            presentRecoverableFailure("批准信息已失效，请重新说一次。", shouldSpeak: state.voiceSessionActive)
             return
         }
         pendingAction = nil
@@ -927,6 +961,35 @@ final class AssistantRuntime {
             if state.interactionSource == .voice {
                 voice.continueAfterSilentReply()
             }
+        }
+    }
+
+    /// Cancelling an operation is not the same as ending the conversation.
+    /// Only the dedicated end-command path or the UI cancel control may clear
+    /// `voiceSessionActive`.
+    private func continueVoiceConversation(after message: String) {
+        guard state.voiceSessionActive else {
+            state.resetToIdle(message: message)
+            return
+        }
+        state.beginListening()
+        state.updateTranscript(message)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, self.state.voiceSessionActive else { return }
+            await self.voice.startListening()
+        }
+    }
+
+    private func presentRecoverableFailure(_ message: String, shouldSpeak: Bool) {
+        if state.voiceSessionActive {
+            if shouldSpeak {
+                deliverReply(message, suggestedSpoken: message, shouldSpeak: true)
+            } else {
+                continueVoiceConversation(after: message)
+            }
+        } else {
+            state.presentError(message)
         }
     }
 }

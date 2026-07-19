@@ -82,7 +82,7 @@ private struct ResponseCard: View {
 
             HStack(spacing: 10) {
                 if state.interactionSource == .notification {
-                    Button("知道了") { state.resetToIdle() }
+                    Button("知道了") { state.dismissTransientCard() }
                         .buttonStyle(AccentButtonStyle())
                 } else {
                     Button("关闭") { state.cancel() }

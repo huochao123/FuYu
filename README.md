@@ -1,154 +1,177 @@
 <div align="center">
-  <img src="Resources/AppIcon.svg" width="108" alt="浮屿 FuYu 图标">
+  <img src="Resources/AppIcon.svg" width="112" alt="浮屿 FuYu 图标">
   <h1>浮屿 FuYu</h1>
-  <p><strong>会听、会说、会照看 Mac 的原生桌面助手</strong></p>
-  <p>语音对话、电脑管家、跨应用执行与飞书远程沟通，集中在一个有反馈、可确认的 macOS 界面里。</p>
+  <p><strong>会对话，也真正会照看 Mac。</strong></p>
+  <p>原生语音助手、本机电脑管家与可控 Agent，统一在一个有反馈、有记忆、有安全边界的 macOS 工作台里。</p>
 
   <p>
+    <img alt="Version 0.10.0" src="https://img.shields.io/badge/version-0.10.0-0F766E">
     <img alt="macOS 15+" src="https://img.shields.io/badge/macOS-15%2B-111827?logo=apple&logoColor=white">
-    <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-native-0F766E">
+    <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-native-2563EB">
     <img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white">
-    <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-22C55E">
+    <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22C55E">
   </p>
 
   <p>
-    <a href="https://github.com/huochao123/FuYu/releases">下载最新版</a>
-    · <a href="#核心能力">核心能力</a>
-    · <a href="#安装">安装</a>
+    <a href="https://github.com/huochao123/FuYu/releases"><strong>下载最新版</strong></a>
+    · <a href="#浮屿能做什么">功能</a>
+    · <a href="#它如何工作">架构</a>
+    · <a href="#安装与权限">安装</a>
     · <a href="CHANGELOG.md">更新日志</a>
-    · <a href="PRIVACY.md">隐私说明</a>
     · <a href="#english">English</a>
   </p>
 </div>
 
-![浮屿 0.9 智能中枢](docs/images/fuyu-0.9-dashboard.png)
+![浮屿智能中枢](docs/images/fuyu-0.9-dashboard.png)
 
-## 不只是一个聊天窗口
+## 一个助手，一套完整的 Mac 交互
 
-浮屿是一款面向 Apple Silicon Mac 的原生助手。它可以停留在刘海下方，通过语音、快捷键、文字或飞书接收要求；MiMo 负责理解和选择能力，电脑维护由浮屿本机工具直接完成，只有本机工具覆盖不到的复杂跨应用任务才交给 Hermes。
+浮屿不是给另一个 Agent 套一层聊天窗口，也不是只会展示数字的“电脑管家”。它把对话、真实系统检测、本机执行、后台任务和后续追问连接成同一条工作流。
 
-浮屿知道自己是一款以 Mac 为核心的本机助手，也会按当前电脑动态了解自己的能力。电脑管家的真实检测结果会同步到 AI 上下文，因此检测后可以直接问“哪个最需要处理”“这条建议有什么好处”或“确认执行”，无需重新描述结果。
+你可以先在电脑管家里检查启动项，再到对话中问“哪个最影响开机”；也可以直接说“检查最近为什么发热”，让浮屿先调用本机工具取得证据，再由模型解释影响和处理方式。简单操作不必绕行 Hermes，复杂跨应用任务才按需委派。
 
-| 语音助手 | 本机电脑管家 | 任务与自动化 |
+| 你做的事 | 浮屿给出的体验 |
+| --- | --- |
+| 说一句稍长的要求 | 悬浮语音条显示收音、临时文字、校正结果和最终采用文字，再送交 AI |
+| 检查 Mac 状态 | 状态屏展示数量、证据、影响、风险和建议，不必去聊天记录找结果 |
+| 继续追问“为什么” | AI 读取刚才的真实检测和时间，不重复扫描，也不把每句话当新会话 |
+| 确认清理或整理 | 先预览，再说明收益和风险，明确确认后执行；可撤回的操作保留恢复入口 |
+| 后台任务很慢 | 任务进入独立轨道，显示耗时与状态；你仍可继续文字或语音对话 |
+| 电脑出现异常 | 低频本机监控只在真实异常时提示，并说明影响、危险程度和谁能处理 |
+
+## 浮屿能做什么
+
+### 语音：从“对讲机”变成连续对话
+
+- 支持 Voicebox 本地 Whisper、Apple 本地识别、自动识别与 MiMo 混合校正；Voicebox 不可用时会保留现场文字并按配置回退。
+- 长按 Fn / 地球键约 0.3 秒开始说话，轻触不会误启动收音。
+- 连续会话不会因为静默、普通错误、后台任务或临时卡片自动结束；只有手动停止或明确说“结束对话”“关闭对话”“语音取消”才退出。
+- 每一轮都显示“等待声音 → 实时识别 → 正在校正 → 最终文字”，长句也会等待完整识别。
+- 支持打断播报、双击悬浮入口取消误识别，以及下一轮自动恢复收音。
+- 语音回复经过独立筛选：朗读结论、关键影响和下一步；参数、路径、ID 与长数字留在屏幕上。
+- 文字、语音、通知三条交互链严格分开：打字不会启动麦克风或悬浮语音窗。
+- Apple Silicon 可选安装 Voicebox 本地语音包：Whisper Small 负责识别，Qwen TTS 0.6B 使用“浮屿 · 冰糖”本机档案发声；原 MiMo“冰糖”和系统语音按顺序兜底。
+
+<p align="center">
+  <img src="docs/images/voice-bubble.png" alt="浮屿语音悬浮窗" width="46%">
+  <img src="docs/images/voice-approval.png" alt="浮屿语音授权卡" width="46%">
+</p>
+
+### 电脑管家：十三项真实本机能力
+
+这些基础能力直接运行在 Mac 上，不消耗模型额度，也不需要 Hermes：
+
+| 状态与诊断 | 存储与整理 | 应用与系统 |
 | --- | --- | --- |
-| 声音联动光场、收音反馈、最终字幕与自然播报 | 系统体检、垃圾扫描、文件整理 | 飞书 WebSocket 远程对话 |
-| 长按 Fn / 地球键、Siri、菜单栏唤醒 | 大文件、重复文件、启动项、应用残留 | Hermes 处理复杂跨应用任务 |
-| 可随时关闭识别，双击悬浮入口停止误识别 | 持续高负载与发热进程判断 | 多任务中心、健康时间线与低频自主维护 |
+| 系统体检 | 垃圾清理预览 | 启动项检查 |
+| 电池、供电与发热诊断 | 下载文件夹整理预览 | 应用残留扫描 |
+| 持续高负载进程判断 | 大文件扫描 | 应用健康档案 |
+| 性能与存储优化建议 | 重复文件哈希确认 | 浮屿权限核对 |
+| 带准确时间的故障现场 |  |  |
 
-## 核心能力
+检测不是终点。每份报告都包含：
 
-### 本机优先的 Agent 核心
+- 检测时间与来源；
+- 真实证据与抽样范围；
+- 会造成什么影响、风险有多高；
+- 浮屿能否处理，还是需要用户决定；
+- “确认执行 / 暂不处理”的下一步入口。
 
-浮屿不是把所有命令转发给 Hermes 的外壳。它使用统一决策协议区分三种结果：直接回答、调用浮屿本机工具、委派 Hermes 专家任务。MiMo 可以看到真实工具清单和最近检测结果；本机快速路由则保证常见 Mac 操作不必等待云端模型。
+所有文件修改遵循 **先扫描 → 看预览 → 明确确认 → 执行 → 验证结果**。删除默认移到废纸篓；智能整理记录实际移动位置并支持安全撤回。
 
-- “下载文件夹分析下”“大文件多吗”“检查启动项”直接调用本机扫描器。
-- 工具结果同时进入状态屏、聊天记录和后续 AI 上下文，可以继续问原因、收益或下一步。
-- “为什么刚才超时”只读取运行记录并解释，不会再次执行或进入复杂任务预审。
-- 云端模型超时时，本机电脑管家、系统控制、监控通知和已有结果仍可使用。
-- 清理、移动等修改操作必须先展示真实扫描结果、收益与风险，再等待明确确认。
+### Agent：本机优先，复杂任务再委派
 
-### 一个真正可用的主界面
+浮屿的决策核心明确区分三类结果：
 
-- 左侧窄导航负责总览、对话、管家和任务切换；中央是真正的状态工作区；右侧智能中枢持续显示声音反馈、语音开关和后台任务轨道。
-- 总览页把实时 Mac 状态屏、浮屿判断、安全守护、快捷操作和健康时间线放在一个完整工作流中。
-- 三套主界面主题：深海蓝青、暖金石墨、冰川银蓝。
-- 采用分层磨砂玻璃与 Liquid Glass 风格，并为旧系统提供原生材质回退。
-- 功能卡片支持整卡点击、鼠标悬停高亮、按下缩放、执行动画和完成状态，不让操作“悄悄发生”。
-- 状态屏完整展示每次扫描的数量与逐条明细；内容较多时在屏幕内部滚动，不必前往聊天记录。
-- 每项结果同时给出优化收益、风险和明确的确认执行／暂不处理选项，执行后继续在状态屏验证实际结果。
-- 只读扫描可以同时运行，修改任务自动排队；后台任务可继续对话、查看耗时或单独取消。
-- 健康时间线保留真实异常、证据、影响与处理结论；智能整理支持撤回到原位置。
+```mermaid
+flowchart LR
+    U["文字 / 语音 / 飞书"] --> A["浮屿决策核心"]
+    A -->|"询问与分析"| R["模型回答"]
+    A -->|"Mac 基础操作"| L["本机工具"]
+    A -->|"复杂跨应用任务"| H["Hermes 可选委派"]
+    L --> C["状态屏 + 对话上下文 + 时间线"]
+    H --> C
+    C --> A
+```
 
-### 不绕模型的本机电脑管家
+- 系统状态、扫描、音量和常见应用启动优先走本机快速通道。
+- 原因、影响、风险与方案分析交给当前模型，并附带本机证据。
+- 跨应用复杂执行才选择 Hermes；没有 Hermes 时，聊天、语音、记忆和电脑管家仍然可用。
+- 模型不能凭空宣称操作成功，必须收到真实工具结果。
+- 只读检测可以并行；修改任务安全排队，并可在任务中心单独查看或取消。
 
-十三项基础工具直接读取本机状态，不消耗模型额度，也不经过 Hermes：
+### 记忆、时间与 Mac 专业知识
 
-- 系统体检
-- 垃圾清理预览
-- 下载文件夹智能整理预览
-- 大文件扫描
-- 重复文件哈希确认
-- 启动项检查
-- 发热进程持续负载判断
-- 应用残留扫描
-- 性能与存储优化建议
-- 应用健康档案
-- 电池、供电与发热诊断
-- 浮屿自身隐私权限核对
-- 带准确时间的故障现场快照
-
-所有涉及清理和移动的操作都遵循 **先扫描 → 看预览 → 明确确认 → 移到废纸篓**。浮屿不会因为点了一张卡片就直接删除文件。
-
-常用系统控制同样采用本机优先：音量和静音可直接调整；屏幕亮度会先检测当前 Mac 是否提供可靠接口。只有得到真实系统结果才会显示成功，不支持时会明确说明。发热进程监控可主动低开销检查，但不会擅自结束进程、清理或移动文件。
-
-### 更安静、更可控的语音
-
-- 支持 Apple 本地识别、自动识别和 MiMo 混合校正；MiMo 模式只需麦克风权限，不依赖 Apple 语音识别授权。
-- Apple 语音识别已授权时显示逐句临时字幕；未授权时仍会实时显示真实声音活动，并在 MiMo 校正后展示最终采用文字。
-- 启用 Apple Voice Processing，降低电脑视频和浮屿自身播报造成的回声误识别。
-- Fn / 地球键需明确长按约 0.3 秒才启动收音，轻触不会误弹权限或影响普通打字。
-- 主界面可直接关闭语音识别；识别中关闭会立即停止且不发送。
-- 悬浮入口双击可结束当前识别，不提交误触内容。
-- 支持打断播报、暂停任务和追加修改要求。
-
-文字、语音和系统提醒采用三套独立交互：文字聊天不会弹出悬浮窗或启动麦克风；语音继续使用声音动画与朗读；真实监控异常使用短暂的纯文字悬浮通知，不监听也不朗读。
+- 最近对话、当前任务、相关历史、永久习惯和完整会话归档分层保存。
+- “继续”“去吧”“为什么”“昨天那个任务”等短句会关联真实任务与准确时间。
+- 后台任务记录开始时间、最后进度和已等待时长，长时间无进展会如实标记“可能卡住”。
+- 二十六个 Mac 专项 Skill 以索引方式存在，每次只加载与当前问题有关的一份正文，减少上下文和等待。
+- 本机经验只学习真实执行结果，并绑定 macOS 版本；系统升级后旧经验必须重新验证。
+- 支持自定义人格与“绾宁 · 古来客”，人格同时影响文字和语音表达，但不改变事实、工具权限或安全边界。
 
 ### 飞书远程入口
 
-通过独立的飞书企业自建应用和 WebSocket 长连接，可以在外面直接与浮屿对话，不需要额外部署公网服务器。聊天回复可直接返回；清理、移动文件和系统修改仍会在 Mac 上等待确认。
+通过飞书企业自建应用和 WebSocket 长连接，可以在外面直接与浮屿沟通，无需额外部署公网服务器。普通问答直接返回飞书；清理、移动文件和系统修改仍在 Mac 上等待明确确认。
 
-### 多模型、记忆与人格
+## 为状态而设计的界面
 
-- 支持 MiMo、OpenAI、Claude、Gemini、DeepSeek、通义千问、Kimi、智谱 GLM、Ollama / LM Studio 与自定义兼容接口。
-- 采用与成熟 Agent 类似的四层记忆：最近对话原文、当前任务状态、永久习惯、完整会话归档与相关历史检索。
-- “去吧、继续、为什么、刚才那个”等短句会承接当前任务；任务状态与相关历史可跨应用重启恢复。
-- 只有明确要求“记住”的稳定偏好才进入永久习惯；临时任务保留在会话归档中，避免污染长期记忆。
-- 支持内置人格切换与自定义人格、关系、背景和说话方式；“绾宁 · 古来客”会同步影响文字和语音表达，但不改变工具能力与安全边界。
-- 可预览并导入 SillyTavern Character Card V1/V2、常见 PNG 角色卡和提示词预设。
+浮屿采用窄导航、中央状态工作区和右侧智能中枢三栏布局。总览是一块真正的“屏幕”，而不是六个放大的按钮：它持续呈现 Mac 状态、浮屿判断、后台任务、最近异常和处理进度。
 
-## 同一套视觉语言
+- 三套主界面主题：深海蓝青、暖金石墨、冰川银蓝。
+- 主界面、设置、语音条、授权卡和执行卡共享同一套 Liquid Glass 视觉语言。
+- 卡片支持整块点击、悬停、按下、执行、成功与失败反馈。
+- 长结果在状态屏内部滚动，不会滚动后只剩半块屏幕。
+- 六款悬浮入口皮肤可即时切换。
 
-主界面和设置中心使用一致的深海背景、玻璃卡片、圆角、间距与按压反馈。设置不再像另一个独立工具。
-
-![浮屿新版设置中心](docs/images/settings.png)
-
-浮屿还提供六款悬浮入口皮肤，可在设置中即时切换：
+![浮屿设置中心](docs/images/settings.png)
 
 | 粒子声场 | 极光流体 | 经典圆球 |
 | --- | --- | --- |
-| <img src="docs/images/voice-bubble.png" alt="粒子声场" width="300"> | <img src="docs/images/skin-auroraFlow.png" alt="极光流体" width="300"> | <img src="docs/images/skin-classicOrb.png" alt="经典圆球" width="300"> |
+| <img src="docs/images/voice-bubble.png" alt="粒子声场" width="290"> | <img src="docs/images/skin-auroraFlow.png" alt="极光流体" width="290"> | <img src="docs/images/skin-classicOrb.png" alt="经典圆球" width="290"> |
 
-## 安全与隐私
+## 安装与权限
 
-- 不包含广告或遥测。
-- 不保存原始录音。
-- 模型密钥、偏好和本地记忆不会写入源码仓库。
-- 电脑管家扫描在本机完成；Hermes 只用于复杂跨应用任务。
-- Hermes 是可选依赖。没有 Hermes 时，聊天、语音、记忆与电脑管家仍可使用。
-- 云端模型、云端 TTS 或混合 ASR 只会把完成相应功能所需的数据发送给用户选择的服务商。
-
-详见 [隐私说明](PRIVACY.md) 与 [安全说明](SECURITY.md)。
-
-## 系统要求
+### 系统要求
 
 - macOS 15 或更高版本
 - Apple Silicon Mac
-- MiMo 混合识别只需要麦克风权限；仅 Apple 本地/自动识别需要额外的语音识别权限
-- 复杂跨应用控制需要辅助功能权限与 Hermes 环境
-- 云端模型或语音服务需要用户自己的 API 密钥
+- 使用云端模型、MiMo ASR 或云端语音时，需要对应服务的 API 密钥
+- 本地 Voicebox 模式需要安装 Voicebox；浮屿会在首次使用本地语音时后台启动它，模型约占 3.3 GB 磁盘空间
+- Hermes 仅在需要复杂跨应用控制时安装
 
-## 安装
+### 安装
 
-1. 前往 [Releases](https://github.com/huochao123/FuYu/releases) 下载最新 DMG。
+1. 从 [Releases](https://github.com/huochao123/FuYu/releases) 下载最新版 DMG。
 2. 将“浮屿”拖入“应用程序”。
-3. 首次启动时，只允许实际需要的权限。
-4. 在设置中选择模型、语音与识别方式。
+3. 首次启动后，在设置里选择模型、识别方式和声音。
+4. 只在使用相应能力时授予所需权限。
 
-当前公开构建使用临时签名。正式大范围分发前仍建议使用 Apple Developer ID 签名并完成公证。
+当前公开构建使用临时签名。面向大范围分发前，仍建议使用 Apple Developer ID 签名并完成公证。
+
+### 权限什么时候出现
+
+| 权限 | 用途 | 触发时机 |
+| --- | --- | --- |
+| 麦克风 | 录制用户语音 | 第一次主动开始语音时 |
+| 语音识别 | 实时临时字幕与本地回退 | MiMo 混合模式第一次主动语音时可请求；拒绝后 MiMo 最终识别仍可工作 |
+| 辅助功能 | 跨应用控制 | 第一次使用对应执行能力时 |
+
+纯文字聊天不会请求麦克风或语音识别权限。
+
+## 隐私与安全边界
+
+- 不包含广告或遥测，不保存原始录音。
+- 电脑管家扫描、任务时间线和记忆文件默认保存在本机。
+- 使用云端模型时，只有回答当前请求所选中的上下文会发送给用户选择的服务商。
+- API 密钥保存在 macOS 钥匙串，不写入源码仓库。
+- 发热监控和自主维护采用低频只读检查，不会擅自结束进程、清理或移动文件。
+- 高风险或有数据影响的操作始终需要明确确认；人格和学习系统不能绕过这条边界。
+
+详见 [隐私说明](PRIVACY.md) 与 [安全说明](SECURITY.md)。
 
 ## Siri 唤醒
 
-在“快捷指令”中新建名为“开始说话”的快捷指令，添加“打开 URL”，填入：
+在“快捷指令”中新建“开始说话”，添加“打开 URL”，填入：
 
 ```text
 fuyu://listen
@@ -165,37 +188,43 @@ scripts/package-app.sh
 scripts/create-installer.sh
 ```
 
+发布前的语音回归还可以运行：
+
+```sh
+.build/debug/MiMoMac --voice-cycle-smoke-test
+.build/debug/MiMoMac --voice-dispatch-smoke-test
+.build/debug/MiMoMac --mimo-asr-smoke-test
+.build/debug/MiMoMac --voicebox-smoke-test
+.build/debug/MiMoMac --voicebox-asr-file-test /path/to/long-recording.wav
+```
+
 ## 开源组件与参考
 
-- 安全缓存扫描、白名单路径校验、移到废纸篓和本机清理日志集成 [Dusty CleanerEngine](https://github.com/yagcioglutoprak/dusty)（MIT），许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-- 实时状态屏与后台采样的功能设计参考 [Stats](https://github.com/exelban/stats)；浮屿使用自己的轻量采样与连续高负载判断。
+- 清理扫描、安全路径校验、移到废纸篓和日志能力集成自 [Dusty CleanerEngine](https://github.com/yagcioglutoprak/dusty)（MIT）。
+- 实时状态与低频采样的产品设计参考 [Stats](https://github.com/exelban/stats)，浮屿使用自己的采样和持续高负载判断。
 - [Mole](https://github.com/tw93/mole) 仅作为产品与安全边界参考，没有合并其 GPLv3 代码。
+- 本地识别、声音克隆与生成通过 [Voicebox](https://github.com/jamiepine/voicebox)（MIT）接入；浮屿保留 MiMo 与系统语音回退，不将 Voicebox 变成聊天或 Agent 中转层。
 
-欢迎提交 Issue、交互建议与代码改进。参与前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。欢迎提交 [Issue](https://github.com/huochao123/FuYu/issues)；参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
 ## English
 
-**FuYu is a native voice assistant and local Mac care console for Apple Silicon.** It combines a sound-reactive voice interface, shared conversation, local maintenance tools, Feishu remote messaging, and optional Hermes-powered cross-app actions in one feedback-rich macOS experience.
+**FuYu is a native voice assistant, local Mac care console, and controllable Agent for Apple Silicon.** It connects conversation, real system evidence, local execution, background tasks, and follow-up reasoning in one macOS interface.
 
 ### Highlights
 
-- Explicit Agent decisions for direct replies, native Mac tools, and optional Hermes expert delegation; common local actions do not wait for Hermes.
-- Native SwiftUI + AppKit experience with glass materials and three main-window themes.
-- Local Mac Care: health inspection, safe junk preview, Downloads organization preview, large files, duplicates, login items, hot processes, leftovers, and optimization advice.
-- Full-card hit targets with hover, press, running, completion, and failure feedback.
-- Voice master switch, echo suppression, interruption, Fn/Globe push-to-talk, Siri Shortcut URL, and double-click cancellation.
-- Feishu WebSocket channel for remote conversation with local approval retained for Mac changes.
-- MiMo, OpenAI, Claude, Gemini, DeepSeek, Qwen, Kimi, GLM, Ollama / LM Studio, and custom compatible providers.
-- Layered local memory, custom personas, and SillyTavern character/preset import.
-- No telemetry or ads. Hermes is optional and reserved for complex cross-app actions.
+- Continuous voice interaction with local Voicebox Whisper/Qwen support, visible partial/final transcripts, interruption, explicit hang-up, and MiMo/system fallback.
+- Thirteen native Mac care tools for health, storage, files, apps, battery, permissions, thermal processes, and incident snapshots.
+- Local-first routing for simple Mac actions; optional Hermes delegation only for complex cross-app work.
+- Shared context between Mac Care results and chat, with timestamps, task state, relevant history, and on-demand Mac Skills.
+- Safe preview, explicit approval, result verification, and undo support where available.
+- A unified Liquid Glass interface across the dashboard, settings, voice overlay, approvals, and execution cards.
+- Feishu WebSocket access, multiple model providers, custom personas, and SillyTavern character imports.
+- No ads or telemetry. Local tools remain available when Hermes is not installed.
 
-### Requirements and install
-
-Requires macOS 15+ on Apple Silicon. Download the latest DMG from [Releases](https://github.com/huochao123/FuYu/releases), drag FuYu into Applications, and grant only the permissions required by the features you use.
-
-See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), and [ROADMAP.md](ROADMAP.md).
+Requires macOS 15+ on Apple Silicon. Download the latest build from [Releases](https://github.com/huochao123/FuYu/releases). See [INSTALL.md](INSTALL.md), [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), and [ROADMAP.md](ROADMAP.md).
 
 ---
 
