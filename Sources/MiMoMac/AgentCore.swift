@@ -120,11 +120,59 @@ enum AgentFastRoute: Equatable {
 
 enum AgentIntentEngine {
     static func route(for text: String, conversation: [AppState.ConversationItem]) -> AgentFastRoute {
+        if isPresenceCheck(text) {
+            let hasRecentTask = conversation.suffix(12).contains { $0.kind == .action || $0.kind == .assistant }
+            return .reply(hasRecentTask
+                ? "我在。刚才的任务和结果都还保留着，你可以直接继续说。"
+                : "我在。你直接说要聊什么，或者要我检查这台 Mac。")
+        }
         if let explanation = localExplanation(for: text, conversation: conversation) {
             return .reply(explanation)
         }
+        if LocalCommandRouter.isNonExecutingDiscussion(text) {
+            return .model
+        }
+        if isDecliningSuggestedAction(text) {
+            return .reply("好，暂不处理。我会保留刚才的检测结果，不执行、不重新扫描；我们继续聊别的。")
+        }
+        if let followUp = followUpAction(for: text, conversation: conversation) {
+            return .local(followUp)
+        }
         if let local = LocalCommandRouter.command(for: text) { return .local(local) }
         return .model
+    }
+
+    static func isPresenceCheck(_ text: String) -> Bool {
+        let value = text.filter { $0.isLetter || $0.isNumber }.lowercased()
+        let phrases = ["在吗", "还在吗", "你人还在吗", "听见了吗", "听得到吗", "怎么不说话", "人呢"]
+        return value.count <= 16 && phrases.contains(where: value.contains)
+    }
+
+    static func followUpAction(
+        for text: String,
+        conversation: [AppState.ConversationItem]
+    ) -> LocalMacCommand? {
+        let value = text.filter { $0.isLetter || $0.isNumber }.lowercased()
+        guard value.count <= 36,
+              !isDecliningSuggestedAction(value),
+              ["处理", "执行建议", "按建议做", "你自己处理", "帮我处理", "就这么做", "去解决"].contains(where: value.contains)
+        else { return nil }
+
+        for item in conversation.suffix(24).reversed() where item.kind == .action || item.kind == .assistant {
+            if let tool = MacCareTool.allCases.first(where: {
+                item.text.contains("检测结论 · \($0.rawValue)")
+                    || item.text.contains("电脑管家 · \($0.rawValue)")
+            }) {
+                return .applyLatest(tool)
+            }
+        }
+        return nil
+    }
+
+    static func isDecliningSuggestedAction(_ text: String) -> Bool {
+        let value = text.filter { $0.isLetter || $0.isNumber }.lowercased()
+        let phrases = ["不处理", "暂不处理", "暂时不处理", "先不处理", "不要处理", "别处理", "不用处理", "取消处理"]
+        return phrases.contains(where: value.contains)
     }
 
     static func isExplanationRequest(_ text: String) -> Bool {

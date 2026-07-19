@@ -97,6 +97,14 @@ struct MacCareReport: Sendable {
     var displayText: String {
         (["电脑管家 · \(tool.rawValue)", headline] + details.map { "• \($0)" }).joined(separator: "\n")
     }
+
+    var conversationText: String {
+        guard !recommendations.isEmpty else { return displayText + "\n\n当前没有需要执行的处理，保留观察即可。" }
+        let actions = recommendations.prefix(3).enumerated().map { index, recommendation in
+            "\(index + 1). \(recommendation.title)\n   好处：\(recommendation.benefit)\n   注意：\(recommendation.risk)\n   可执行：\(recommendation.buttonTitle)"
+        }.joined(separator: "\n")
+        return displayText + "\n\n下一步建议：\n" + actions + "\n\n你可以直接说“按建议处理”或“暂不处理”。涉及文件修改时仍会再次确认。"
+    }
 }
 
 enum MacDiagnosticSeverity: String, Sendable, Equatable {
@@ -130,11 +138,17 @@ struct MacDiagnosticFinding: Sendable {
         summary = report.headline
         evidence = Array(report.details.prefix(8))
         impact = Self.impact(for: report.tool)
-        severity = Self.severity(for: report)
-        ownership = Self.ownership(for: report)
-        nextStep = report.recommendations.first.map {
-            "\($0.title)。预期收益：\($0.benefit)；注意：\($0.risk)"
-        } ?? "当前没有需要执行的修复动作，继续监控即可。"
+        if report.headline.contains("已打开活动监视器") {
+            severity = .attention
+            ownership = .guidedUserAction
+            nextStep = "活动监视器已经打开，但原来的高负载是否消失尚未验证；结束任何进程前先确认来源并保存工作。"
+        } else {
+            severity = Self.severity(for: report)
+            ownership = Self.ownership(for: report)
+            nextStep = report.recommendations.first.map {
+                "\($0.title)。预期收益：\($0.benefit)；注意：\($0.risk)"
+            } ?? "当前没有需要执行的修复动作，继续监控即可。"
+        }
     }
 
     var prompt: String {
@@ -627,20 +641,25 @@ enum MacCareService {
     }
 
     private static func batteryHealthScan() throws -> MacCareReport {
-        let battery = try command("/usr/bin/pmset", arguments: ["-g", "batt"])
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let powerProfile = try command("/usr/sbin/system_profiler", arguments: ["SPPowerDataType", "-json"])
+        let batteryDetails = batteryProfileDetails(from: powerProfile)
         let assertions = (try? command("/usr/bin/pmset", arguments: ["-g", "assertions"])) ?? ""
+        var seenSleepBlockers = Set<String>()
         let blockers = assertions.split(separator: "\n")
-            .filter { $0.contains("PreventUserIdleSystemSleep") || $0.contains("PreventSystemSleep") }
-            .prefix(5).map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter {
+                $0.contains("pid ")
+                    && ($0.contains("PreventUserIdleSystemSleep") || $0.contains("PreventSystemSleep"))
+            }
+            .map { friendlySleepBlocker(String($0)) }
+            .filter { seenSleepBlockers.insert($0).inserted }
+            .prefix(5)
         let processes = try topProcesses(limit: 5)
-        let details = [battery.isEmpty ? "未读取到电池状态" : battery]
-            + (blockers.isEmpty ? ["当前未发现明显的睡眠阻止摘要"] : ["睡眠相关断言："] + blockers)
-            + ["当前高负载进程："] + processes
+        let details = batteryDetails
+            + (blockers.isEmpty ? ["当前没有应用阻止自动休眠"] : ["阻止自动休眠："] + blockers)
+            + ["当前能耗较高的进程："] + processes
         return .init(
             tool: .batteryHealth,
-            headline: "已读取供电、电量、睡眠阻止项和当前高负载进程；没有修改节能设置。",
+            headline: "已读取电池健康、供电、睡眠阻止项和当前能耗来源；没有修改节能设置。",
             details: details,
             recommendations: processes.isEmpty ? [] : [.init(
                 title: "核对当前能耗来源",
@@ -650,6 +669,39 @@ enum MacCareService {
                 action: .openActivityMonitor
             )]
         )
+    }
+
+    private static func batteryProfileDetails(from json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let power = (root["SPPowerDataType"] as? [[String: Any]])?.first else {
+            return ["没有读取到可验证的电池健康数据"]
+        }
+        let health = power["sppower_battery_health_info"] as? [String: Any] ?? [:]
+        let charge = power["sppower_battery_charge_info"] as? [String: Any] ?? [:]
+        let condition = (health["sppower_battery_health"] as? String).map { $0 == "Good" ? "正常" : $0 } ?? "未知"
+        let maximum = health["sppower_battery_health_maximum_capacity"] as? String ?? "未知"
+        let cycles = health["sppower_battery_cycle_count"].map { "\($0)" } ?? "未知"
+        let level = charge["sppower_battery_state_of_charge"].map { "\($0)%" } ?? "未知"
+        let charging = (charge["sppower_battery_is_charging"] as? String) == "TRUE" ? "正在充电" : "当前未充电"
+        return [
+            "电池健康：\(condition)；最大容量 \(maximum)；循环 \(cycles) 次",
+            "当前电量：\(level)；\(charging)"
+        ]
+    }
+
+    private static func friendlySleepBlocker(_ raw: String) -> String {
+        let name: String
+        if raw.contains("coreaudiod") {
+            name = "系统音频服务"
+        } else if raw.contains("powerd") {
+            return "系统电源管理服务正在按当前系统策略阻止休眠"
+        } else if let start = raw.firstIndex(of: "("), let end = raw[start...].firstIndex(of: ")") {
+            name = String(raw[raw.index(after: start)..<end])
+        } else {
+            name = "一个后台进程"
+        }
+        return "\(name)正在阻止自动休眠；常见原因是播放、录音、音频抓取或仍在进行的后台任务"
     }
 
     private static func privacyAudit() -> MacCareReport {
@@ -778,8 +830,11 @@ enum MacCareService {
         process.standardOutput = pipe
         process.standardError = Pipe()
         try process.run()
-        process.waitUntilExit()
+        // Drain stdout while the child is still running. On a Mac with many
+        // processes, ps can exceed the pipe buffer and otherwise deadlock with
+        // the parent waiting for termination before it starts reading.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let text = String(decoding: data, as: UTF8.self)
         return text.split(separator: "\n").prefix(limit).compactMap { line in
             let parts = line.split(maxSplits: 3, whereSeparator: \Character.isWhitespace)
@@ -810,8 +865,8 @@ enum MacCareService {
         process.standardOutput = pipe
         process.standardError = Pipe()
         try process.run()
-        process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw CocoaError(.executableLoad) }
         return String(decoding: data, as: UTF8.self)
     }

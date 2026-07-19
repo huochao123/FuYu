@@ -25,8 +25,13 @@ enum LocalCommandRouter {
         // Explanations are handled by the agent's dialogue layer. Words such
         // as “执行” inside a why-question must never be interpreted as a new action.
         if AgentIntentEngine.isExplanationRequest(value) { return nil }
+        if isNonExecutingDiscussion(value) { return nil }
 
-        if ["你是谁", "你是什么助手", "你能做什么", "你会做什么", "你的能力", "你有什么功能"].contains(where: value.contains) {
+        // Release notes, pasted explanations and feature descriptions often
+        // contain tool names. A noun match is not permission to execute it.
+        if isNarrativeOrQuotedContent(value) || isDiscussionAboutContent(value) { return nil }
+
+        if isCapabilityQuestion(value) {
             return .capabilities
         }
 
@@ -88,9 +93,56 @@ enum LocalCommandRouter {
             (.optimization, ["优化建议", "检查优化", "系统优化"])
         ]
         for (tool, keywords) in mappings where keywords.contains(where: value.contains) {
-            return .scan(tool)
+            let exactShorthand = keywords.contains(value)
+            if exactShorthand || explicitlyRequestsInspection(value) {
+                return .scan(tool)
+            }
         }
         return nil
+    }
+
+    static func isCapabilityQuestion(_ text: String) -> Bool {
+        let value = text.lowercased()
+        let phrases = [
+            "你是谁", "你是什么助手", "你能做什么", "你会做什么", "你的能力", "你有什么功能",
+            "有什么新功能", "有新功能吗", "新增了什么", "更新了什么", "升级了什么", "现在能干什么",
+            "现在有哪些功能", "多少项电脑管家", "有多少项功能", "这次更新", "新版功能"
+        ]
+        return phrases.contains(where: value.contains)
+    }
+
+    static func isNonExecutingDiscussion(_ text: String) -> Bool {
+        let value = text.lowercased()
+        let signals = [
+            "为什么", "为啥", "如果", "假如", "会怎么做", "会怎样", "只是问", "我只是想问",
+            "先别", "暂时别", "不要真的", "别真的", "不要执行", "别执行", "不需要执行", "不用执行",
+            "不让你", "没让你", "没有让你"
+        ]
+        return signals.contains(where: value.contains)
+    }
+
+    static func isNarrativeOrQuotedContent(_ text: String) -> Bool {
+        let releaseTerms = ["新增", "扩展到", "修复", "沿用", "布局", "实测", "版本", "更新说明", "改动"]
+        let matchedTerms = releaseTerms.filter { text.contains($0) }.count
+        let hasListShape = text.contains("\n") || text.contains("：") || text.contains(":")
+        return text.count >= 70 && matchedTerms >= 2 && hasListShape
+    }
+
+    static func isDiscussionAboutContent(_ text: String) -> Bool {
+        let contentSignals = [
+            "说明", "聊天记录", "这段话", "这句话", "我发的", "功能清单", "更新内容", "方案", "布局",
+            "评论一下", "评价一下", "什么意思", "写的是", "提到"
+        ]
+        let explicitExecution = ["执行这个", "运行这个", "按这个执行", "照这个做", "扫描这台", "检查这台"].contains(where: text.contains)
+        return !explicitExecution && contentSignals.contains(where: text.contains)
+    }
+
+    static func explicitlyRequestsInspection(_ text: String) -> Bool {
+        let inspectionPhrases = [
+            "检查", "扫描", "查一下", "查下", "查找", "看看", "看下", "分析", "统计", "检测",
+            "帮我查", "帮我看", "给我查", "给我看", "运行", "开始", "执行", "删除", "清理", "有多少", "占用多少"
+        ]
+        return inspectionPhrases.contains(where: text.contains)
     }
 
     private static func percentage(in text: String) -> Int? {
@@ -234,8 +286,8 @@ actor LocalMacControlService {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
-        process.waitUntilExit()
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw LocalMacToolError.commandFailed(output) }
         return output
     }

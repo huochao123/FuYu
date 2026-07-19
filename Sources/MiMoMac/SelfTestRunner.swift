@@ -272,6 +272,105 @@ enum SelfTestRunner {
                 && LocalCommandRouter.command(for: "打开活动监视器") == .openApplication("活动监视器"),
             "基础 Mac 指令优先路由到浮屿本机能力且重复文件不直接删除"
         )
+        let releaseNotes = """
+        全新三栏布局：窄导航、中央状态工作区、右侧智能中枢。
+        新增应用健康、电池与发热、隐私权限、故障现场。
+        电脑管家扩展到 13 项真实本机工具，并修复文字聊天逻辑。
+        """
+        check(
+            LocalCommandRouter.command(for: releaseNotes) == nil
+                && LocalCommandRouter.command(for: "请检查应用健康") == .scan(.appHealth)
+                && LocalCommandRouter.command(for: "看看我发的应用健康说明写得怎么样") == nil
+                && LocalCommandRouter.command(for: "看看我发的新版功能说明") == nil
+                && LocalCommandRouter.command(for: "你觉得有新功能吗") == .capabilities
+                && LocalCommandRouter.command(for: "你现在到底有多少项电脑管家功能") == .capabilities
+                && AssistantRuntime.missingCriticalDetailsQuestion(for: "聊天记录里提到发送消息失败，评论一下") == nil,
+            "功能说明不会因包含工具名称而误执行"
+        )
+        let compactToolMemory = AppState.compactConversationMemory(
+            String(repeating: "网页内容进程 CPU 88%，", count: 100),
+            kind: .action
+        )
+        let compactModelMemory = MiMoAssistantClient.compactActionMemory(
+            prefix: "实际执行成功",
+            title: "发热进程",
+            result: String(repeating: "ExampleApp CPU 88%\n", count: 100)
+        )
+        check(
+            compactToolMemory.count < 460
+                && compactToolMemory.contains("完整结果保留在状态屏")
+                && compactModelMemory.count <= 1_200
+                && compactModelMemory.hasPrefix("实际执行成功：发热进程"),
+            "长扫描结果会压缩后进入模型上下文，避免连续聊天越来越慢"
+        )
+        let guardedNarrativeDecision = MiMoAssistantClient.reconcileDecision(
+            .tool(.init(id: .appHealth, arguments: [:])),
+            userText: releaseNotes
+        )
+        if case let .reply(text, _) = guardedNarrativeDecision {
+            check(text.contains("不是执行命令"), "模型误选工具时仍会拦截说明文字执行")
+        } else {
+            check(false, "模型误选工具时仍会拦截说明文字执行")
+        }
+        let recentFindingFixture: [AppState.ConversationItem] = [
+            .init(kind: .action, text: "检测结论 · 发热进程：发现网页内容进程持续高负载"),
+            .init(kind: .assistant, text: "建议先确认高负载来源")
+        ]
+        check(
+            AgentIntentEngine.route(for: "可以啊，有问题你就自己处理", conversation: recentFindingFixture)
+                == .local(.applyLatest(.hotProcesses)),
+            "处理类短句承接最近检测建议而不是重复扫描"
+        )
+        if case let .reply(declineReply) = AgentIntentEngine.route(
+            for: "暂时不处理，继续聊天就行",
+            conversation: recentFindingFixture
+        ) {
+            check(declineReply.contains("不执行") && declineReply.contains("继续聊"), "否定处理不会反向触发执行")
+        } else {
+            check(false, "否定处理不会反向触发执行")
+        }
+        check(
+            AgentIntentEngine.route(
+                for: "我刚才为什么不让你直接处理那个发热进程？",
+                conversation: recentFindingFixture
+            ) == .model
+                && LocalCommandRouter.command(for: "如果我让你把音量调低 10，你会怎么做？先别真的调。") == nil,
+            "原因复盘和假设问题只讨论，不因包含操作词而执行"
+        )
+        let openedMonitorReport = MacCareReport(
+            tool: .hotProcesses,
+            headline: "已打开活动监视器",
+            details: ["结束进程前请先保存工作"]
+        )
+        let openedMonitorFinding = MacDiagnosticFinding(report: openedMonitorReport)
+        check(
+            openedMonitorFinding.severity == .attention
+                && openedMonitorFinding.nextStep.contains("尚未验证"),
+            "打开活动监视器不再冒充异常已经解决"
+        )
+        if case let .reply(presenceReply) = AgentIntentEngine.route(for: "你人还在吗", conversation: recentFindingFixture) {
+            check(presenceReply.contains("我在") && presenceReply.contains("结果"), "在线确认不覆盖或丢失当前任务")
+        } else {
+            check(false, "在线确认不覆盖或丢失当前任务")
+        }
+        let focusGuardURL = FileManager.default.temporaryDirectory.appendingPathComponent("fuyu-focus-guard-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: focusGuardURL)
+            try? FileManager.default.removeItem(at: focusGuardURL.deletingPathExtension().appendingPathExtension("archive.jsonl"))
+            try? FileManager.default.removeItem(at: focusGuardURL.deletingPathExtension().appendingPathExtension("task-focus.json"))
+        }
+        let focusGuardState = AppState(historyURL: focusGuardURL)
+        focusGuardState.beginThinking(userText: "调查网页内容进程持续高负载")
+        focusGuardState.presentSilentReply("正在确认它属于哪个应用")
+        focusGuardState.beginThinking(userText: "你人还在吗")
+        focusGuardState.presentSilentReply("我在，刚才任务还保留着")
+        let focusAfterPresence = focusGuardState.contextualizedRequest("继续")
+        check(
+            focusAfterPresence.contains("调查网页内容进程持续高负载")
+                && focusAfterPresence.contains("正在确认它属于哪个应用")
+                && focusAfterPresence.contains("当前任务（创建于"),
+            "在线确认不会把工作记忆改成新任务"
+        )
         let explanationFixture: [AppState.ConversationItem] = [
             .init(kind: .action, text: "复杂任务预审：正在向 Hermes 获取只读方案"),
             .init(kind: .error, text: "模型响应超时")
@@ -322,6 +421,12 @@ enum SelfTestRunner {
             "自定义人格与关系设定"
         )
         preferences.personaPreset = .wanNing
+        check(
+            !preferences.personaStyledReply("啧，这点事也值得你犯愁。你可能没刷新全。").contains("值得你犯愁")
+                && preferences.personaStyledReply("你确定啥也没开？").contains("继续排查后台来源")
+                && !preferences.personaStyledReply("我刚睡醒，让我安静会儿也行。").contains("刚睡醒"),
+            "人格不会贬低用户、推责或虚构自身经历"
+        )
         let ordinaryPersona = PersonaKnowledgeLibrary.select(
             for: "帮我看一下电池状态",
             enabled: true,
@@ -335,7 +440,7 @@ enum SelfTestRunner {
         check(
             preferences.profile.personaPrompt.contains("当前人格：绾宁")
                 && preferences.profile.personaPrompt.contains("表面毒舌")
-                && preferences.profile.personaPrompt.count < 260
+                && preferences.profile.personaPrompt.count < 520
                 && preferences.effectiveSpeechInstructions.contains("轻微毒舌")
                 && preferences.personaStyledReply("你好，有什么需要帮助的吗？").contains("我在")
                 && preferences.personaStyledReply("操作失败：权限不足").contains("操作失败：权限不足")

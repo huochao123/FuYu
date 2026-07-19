@@ -770,8 +770,8 @@ final class AppState: ObservableObject {
                 case .action: role = "真实工具/任务状态"
                 case .error: role = "执行错误"
                 }
-                let compact = item.text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                return "[\(Self.memoryTimestamp(for: item.createdAt))] \(role)：\(String(compact.prefix(380)))"
+                let compact = Self.compactConversationMemory(item.text, kind: item.kind)
+                return "[\(Self.memoryTimestamp(for: item.createdAt))] \(role)：\(compact)"
             }.joined(separator: "\n")
         }
 
@@ -788,6 +788,19 @@ final class AppState: ObservableObject {
         与当前请求相关的较早记录（仅作为历史，不要误当成刚发生）：
         \(includePersistent ? relevantText : "跨启动工作记忆已关闭，未调用会话归档。")
         """
+    }
+
+    nonisolated static func compactConversationMemory(_ text: String, kind: ConversationItem.Kind) -> String {
+        let compact = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit: Int
+        switch kind {
+        case .user: limit = 700
+        case .assistant: limit = 520
+        case .action, .error: limit = 420
+        }
+        guard compact.count > limit else { return compact }
+        return String(compact.prefix(limit)) + "…（完整结果保留在状态屏）"
     }
 
     nonisolated static func memoryTimestamp(for date: Date, relativeTo now: Date = Date()) -> String {

@@ -25,6 +25,7 @@ final class FuYuMemorySystem {
     private let focusURL: URL
     private(set) var focus: TaskFocus?
     private var archiveItems: [AppState.ConversationItem] = []
+    private var preserveFocusForCurrentExchange = false
 
     init(historyURL: URL) {
         let stem = historyURL.deletingPathExtension()
@@ -159,6 +160,11 @@ final class FuYuMemorySystem {
     }
 
     func observeUserMessage(_ text: String) {
+        if Self.isFocusNeutral(text) {
+            preserveFocusForCurrentExchange = true
+            touchFocus()
+            return
+        }
         guard !Self.isContextDependent(text) else {
             touchFocus()
             return
@@ -177,6 +183,11 @@ final class FuYuMemorySystem {
     }
 
     func observeAssistantReply(_ text: String) {
+        if preserveFocusForCurrentExchange {
+            preserveFocusForCurrentExchange = false
+            touchFocus()
+            return
+        }
         guard var current = focus else { return }
         current.lastAssistantContext = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1_500))
         current.updatedAt = Date()
@@ -232,9 +243,17 @@ final class FuYuMemorySystem {
             "去吧", "继续", "继续吧", "执行吧", "就这个", "就这样", "现在呢", "然后呢", "这个呢",
             "刚才那个", "上一个", "为什么", "为啥", "怎么不行", "现在知道了吗", "我刚让你干嘛",
             "按这个来", "照这个做", "确认", "可以", "好的", "没记忆", "没有记忆", "失忆",
-            "你还记得", "记得我刚才"
+            "你还记得", "记得我刚才", "啥也没开", "什么也没开", "没有打开", "没开啊"
         ]
         return compact.count <= 24 && signals.contains(where: compact.contains)
+    }
+
+    static func isFocusNeutral(_ text: String) -> Bool {
+        let compact = text.filter { $0.isLetter || $0.isNumber }.lowercased()
+        let exact = ["嗨", "你好", "哈喽", "在吗", "还在吗", "你人还在吗", "人呢", "听见了吗", "听得到吗", "怎么不说话"]
+        if exact.contains(compact) { return true }
+        let neutralPhrases = ["你感觉如何", "你还好吗", "辛苦了", "谢谢", "多谢"]
+        return compact.count <= 20 && neutralPhrases.contains(where: compact.contains)
     }
 
     private func touchFocus() {

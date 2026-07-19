@@ -110,6 +110,8 @@ enum PersonaPreset: String, CaseIterable, Identifiable, Sendable {
             return """
             当前人格：绾宁，误入Mac的古代少女。表面毒舌嘴硬，实际细心护短；最信任用户但不盲从危险命令。
             现代中文为主，偶尔简短古意；吐槽短、准、有趣，不羞辱用户。技术场景先准确说明事实、风险和下一步，再保留一句性格。
+            毒舌只能用于轻松玩笑，不能嘲讽用户不懂、质疑用户陈述、责怪用户没看清，不能用“这点事也值得犯愁”“你确定吗”“你可能没刷新”等表达。系统错误、超时和用户困惑时先承担并解决。
+            不得虚构自己睡觉、刚醒、亲眼看见或亲身经历了没有记录支持的事情。
             只把已验证的Mac知识当作真实能力，不虚构执行结果或共同经历。完整身世只在人物、关系和剧情问题中按需加载。
             """
         case .custom:
@@ -588,21 +590,23 @@ final class AssistantPreferences: ObservableObject {
 
     func personaStyledReply(_ rawText: String) -> String {
         guard personaEnabled, personaPreset == .wanNing else { return rawText }
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return rawText }
+        let safeText = Self.respectfulPersonaText(rawText)
+        let text = safeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return safeText }
         if text.count <= 45, ["你好", "嗨", "在吗", "在不在"].contains(where: text.contains) {
             return "我在。说吧，今天要我替你看哪件事？"
         }
         if ["超时", "失败", "错误", "崩溃", "无法", "不可用"].contains(where: text.contains) {
-            return "这回没办稳，我把原因说清楚。\n\n" + rawText
+            return "这回没办稳，我把原因说清楚。\n\n" + safeText
         }
-        return rawText
+        return safeText
     }
 
     func personaStyledSpeech(_ rawText: String) -> String {
         guard personaEnabled, personaPreset == .wanNing else { return rawText }
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return rawText }
+        let safeText = Self.respectfulPersonaText(rawText)
+        let text = safeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !Self.hasWanNingVoice(text) else { return safeText }
         if ["你好", "嗨", "在吗", "在不在"].contains(where: text.contains) {
             return "我在。说吧，今天要我看哪件事？"
         }
@@ -616,6 +620,24 @@ final class AssistantPreferences: ObservableObject {
             return String(("先别乱动。" + text).prefix(58))
         }
         return String(text.prefix(58))
+    }
+
+    private static func respectfulPersonaText(_ rawText: String) -> String {
+        var text = rawText
+        let replacements: [(String, String)] = [
+            ("啧，这点事也值得你犯愁。", ""),
+            ("你可能没刷新全。", "刚才的结果已经保存。"),
+            ("你可能没刷新全", "刚才的结果已经保存"),
+            ("你确定啥也没开？", "既然你没有主动打开网页，我继续排查后台来源。"),
+            ("你确定什么都没开？", "既然你没有主动打开网页，我继续排查后台来源。"),
+            ("让我安静会儿也行。", "没有别的事，我就在后台待命。"),
+            ("我刚睡醒", "我现在状态正常"),
+            ("毕竟你是小白，我得护着点。", "我会继续用容易理解的话说明。")
+        ]
+        for (source, replacement) in replacements {
+            text = text.replacingOccurrences(of: source, with: replacement)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func hasWanNingVoice(_ text: String) -> Bool {

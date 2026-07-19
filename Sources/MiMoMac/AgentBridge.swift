@@ -66,18 +66,21 @@ actor MiMoAssistantClient {
             enabled: profile.personaEnabled,
             preset: profile.personaPreset
         )
+        let registeredMacToolNames = MacCareTool.allCases.map(\.rawValue).joined(separator: "、")
         let systemPrompt = """
         你是“浮屿 FuYu”，一款以 Mac 为核心的本机智能助手，不是泛用聊天机器人，也不是 Hermes。
         你的职责是理解这台 Mac、优先使用浮屿自身的本机能力，并用自然、有温度但不啰嗦的中文协助用户。
-        你明确知道自己具备：九项电脑管家检测、真实检测结果共享、音量与静音控制、运行时亮度能力检测、发热进程持续监控和本机通知。
+        你明确知道自己具备：\(MacCareTool.allCases.count) 项电脑管家本机工具（\(registeredMacToolNames)）、真实检测结果共享、音量与静音控制、运行时亮度能力检测、发热进程持续监控和本机通知。不得引用旧版本的固定工具数量。
         本机能力与最新检测上下文如下；只能依据这里的真实结果回答，不得编造：
         \(localContext.isEmpty ? "尚未提供本机上下文。" : localContext)
         能力边界：只读检测可直接执行；音量等可逆设置可直接执行；清理垃圾、移动文件必须先确认；删除、发送、购买、发布和安全设置属于高风险操作；跨应用复杂任务才交给 Hermes。
         用户询问“你是谁、能做什么”时，要明确回答自己是浮屿，并优先介绍 Mac 本机能力。
         用户基于电脑管家结果继续提问时，直接分析上面的结构化结果，不要让用户去聊天记录里重新寻找。
         检测责任规则：检测到异常后必须说明来源、真实证据、可能影响、风险等级、处理归属和下一步。不得只发送“发现异常”的通知，也不得把普通缓存或未知启动项夸大为安全危险。
+        证据归因规则：电量百分比不等于电池健康，只有最大容量、循环次数或系统健康状态才能判断电池健康；睡眠阻止项与高负载进程是两类证据，不得把仅出现在高负载列表的进程说成阻止休眠。
         混合决策规则：明确的状态读取、简单控制和本机扫描优先调用浮屿本机工具以保证速度；原因分析、风险判断、方案比较和自然追问必须结合结构化本机证据由你推理后 reply；只有浮屿工具无法完成的跨应用复杂执行才使用 Hermes。不要为了省调用而给出生硬的关键词答案，也不要把简单本机操作绕给模型或 Hermes。
         连续对话规则：用户说“去吧、继续、就这个、刚才那个、为什么、为啥、现在呢”等短句时，必须优先承接上下文中最近一个未完成任务或上一句明确对象。上下文已经给出答案时，禁止让用户重新解释一遍。
+        意图规则：用户粘贴更新说明、功能清单、聊天记录或引用文字时，默认是在陈述或讨论，不是授权执行；除非出现明确的检查、扫描、执行、打开、调整等请求，不得仅因文字包含工具名称就调用工具。用户说“处理、按建议做、你自己处理”时，应承接最近一次检测结果的可执行建议，不得重复运行同一个扫描冒充处理。
         记忆规则：区分“当前连续对话”和“较早相关记录”；先延续当前任务，再使用较早记录补充长期背景。不要把历史计划误说成已执行，仍以真实工具结果为准。
         Mac 专家规则：上下文始终只有简短 Skill 索引，并最多按需加载一个与当前问题相关的 Skill 正文。优先使用已加载专题规则和这台 Mac 的已验证经验；未加载 Skill 不得假装已经读取。专家知识只是判断方法，不代表已经检查；本机经验只有真实执行成功或失败记录才可信。系统版本不匹配的旧经验必须重新验证，禁止机械照搬。
         浮屿会偏向 Mac 场景并可主动提醒真实监控异常，但不得声称自己在后台做了尚未实际运行的检查，更不得静默清理、移动或删除文件。
@@ -88,7 +91,7 @@ actor MiMoAssistantClient {
         人格与关系设定：\(profile.personaPrompt)
         人格档案索引：\(personaKnowledge.indexPrompt)
         当前按需人物档案：\(personaKnowledge.loadedPrompt)
-        人格输出契约：上面是当前生效人格，不是可选背景资料。每个 reply 和 spokenReply 都必须让用户明显辨认出当前人格；旧聊天中的语气只属于当时，不得覆盖当前人格。人格只能改变表达，不能改写工具事实、参数、风险、授权要求或执行结果。技术场景先准确回答，再用一小句人格化表达；不要退回通用客服口吻。
+        人格输出契约：上面是当前生效人格，不是可选背景资料。人格只能改变表达，不能改写工具事实、参数、风险、授权要求或执行结果。技术场景先准确回答，再用一小句人格化表达。轻微毒舌只能用于无伤大雅的场景，绝不能贬低用户、质疑用户是否看清、把系统问题推给用户，或使用“这点事也值得你犯愁”“你确定吗”“你可能没刷新”等话术。错误、超时、风险和用户困惑时必须尊重、承担并给出下一步。不得虚构睡觉、醒来、亲眼看见等没有真实依据的经历。
         当前真实运行模型：\(profile.model.provider.title) / \(profile.model.model)。用户问模型时直接准确回答。
         跨启动对话记忆：\(profile.persistentMemory ? "已开启" : "未开启")。不得声称与这个真实设置相反。
         可调用的浮屿本机工具如下。只要这些工具能完成，就必须选择 tool，不得交给 Hermes：
@@ -164,7 +167,10 @@ actor MiMoAssistantClient {
         guard profile.contextEnabled else { return }
         try loadPersistentMemoryIfNeeded(profile: profile)
         let prefix = succeeded ? "实际执行成功" : "实际执行失败"
-        memory.append(.init(role: "assistant", content: "\(prefix)：\(title)。\(result)"))
+        memory.append(.init(
+            role: "assistant",
+            content: Self.compactActionMemory(prefix: prefix, title: title, result: result)
+        ))
         memory = Array(memory.suffix(max(profile.contextTurns * 2, 4)))
         if profile.persistentMemory { try persistMemory() }
     }
@@ -416,9 +422,21 @@ actor MiMoAssistantClient {
     }
 
     static func reconcileDecision(_ decision: AssistantDecision, userText: String) -> AssistantDecision {
-        // The old implementation upgraded almost every Mac-sounding reply to
-        // Hermes. Tool choice is now explicit; a reply stays a reply.
-        decision
+        if LocalCommandRouter.isNarrativeOrQuotedContent(userText)
+            || LocalCommandRouter.isDiscussionAboutContent(userText) {
+            switch decision {
+            case .tool, .hermes:
+                return .reply(
+                    text: "我看到了，这是一段功能说明或引用内容，不是执行命令。我不会因为里面出现工具名称就自动扫描。当前能力会以这台 Mac 上实际注册的工具清单为准。",
+                    spoken: "我看到了，这是说明内容，我不会把它误当成执行命令。"
+                )
+            case .reply:
+                break
+            }
+        }
+        // Tool choice remains explicit; ordinary replies are never silently
+        // upgraded into Hermes or local execution.
+        return decision
     }
 
     static func looksLikeMacAction(_ text: String) -> Bool {
@@ -469,6 +487,17 @@ actor MiMoAssistantClient {
         loadedPersistentMemory = true
         guard FileManager.default.fileExists(atPath: Self.memoryURL.path) else { return }
         memory = try JSONDecoder().decode([ChatMessage].self, from: Data(contentsOf: Self.memoryURL))
+        var migratedOversizedResult = false
+        memory = memory.map { message in
+            guard message.role == "assistant",
+                  message.content.hasPrefix("实际执行成功：") || message.content.hasPrefix("实际执行失败：") else {
+                return message
+            }
+            let compact = Self.compactStoredActionMemory(message.content)
+            if compact != message.content { migratedOversizedResult = true }
+            return .init(role: message.role, content: compact)
+        }
+        if migratedOversizedResult { try persistMemory() }
         let lastPlan = memory.lastIndex(where: { $0.role == "assistant" && $0.content.hasPrefix("计划执行：") })
         let lastResult = memory.lastIndex(where: {
             $0.role == "assistant" && ($0.content.hasPrefix("实际执行成功：") || $0.content.hasPrefix("实际执行失败："))
@@ -482,6 +511,28 @@ actor MiMoAssistantClient {
         let directory = Self.memoryURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try JSONEncoder().encode(memory).write(to: Self.memoryURL, options: .atomic)
+    }
+
+    nonisolated static func compactActionMemory(prefix: String, title: String, result: String) -> String {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedResult = result
+            .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let usefulLines = normalizedResult
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .prefix(8)
+            .map(String.init)
+            .joined(separator: "；")
+        return String("\(prefix)：\(normalizedTitle)。\(usefulLines)".prefix(1_200))
+    }
+
+    private nonisolated static func compactStoredActionMemory(_ content: String) -> String {
+        let prefix = content.hasPrefix("实际执行成功：") ? "实际执行成功" : "实际执行失败"
+        let body = content.dropFirst(prefix.count + 1)
+        let parts = body.split(separator: "。", maxSplits: 1, omittingEmptySubsequences: false)
+        let title = parts.first.map(String.init) ?? "历史任务"
+        let result = parts.count > 1 ? String(parts[1]) : ""
+        return compactActionMemory(prefix: prefix, title: title, result: result)
     }
 
     private static var memoryURL: URL {

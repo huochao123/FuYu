@@ -320,6 +320,19 @@ final class AssistantRuntime {
                         self.state.presentError("浮屿没有识别出这个本机工具的参数，未执行任何操作。")
                         return
                     }
+                    if case let .scan(tool) = localCommand,
+                       let recent = self.state.latestMacDiagnosticFindings[tool],
+                       Date().timeIntervalSince(recent.detectedAt) < 90,
+                       !Self.explicitlyRequestsRefresh(effectiveRequest) {
+                        let evidence = recent.evidence.prefix(3).joined(separator: "；")
+                        self.state.recordActionStatus("没有重复扫描：\(tool.rawValue)在 90 秒内已有结果")
+                        self.deliverReply(
+                            "我没有再重复扫描。刚才的\(tool.rawValue)结果仍然有效：\(recent.summary)\n证据：\(evidence.isEmpty ? "已保留在状态屏" : evidence)\n影响：\(recent.impact)\n下一步：\(recent.nextStep)",
+                            suggestedSpoken: "刚才的结果仍然有效，我没有重复扫描。",
+                            shouldSpeak: shouldSpeak
+                        )
+                        return
+                    }
                     self.state.recordActionStatus("浮屿选择本机工具：\(call.id.rawValue)")
                     self.handleLocalCommand(localCommand, shouldSpeak: shouldSpeak)
                 case let .hermes(title, detail, prompt):
@@ -441,6 +454,10 @@ final class AssistantRuntime {
 
     static func missingCriticalDetailsQuestion(for userText: String) -> String? {
         let value = userText.lowercased()
+        if LocalCommandRouter.isNarrativeOrQuotedContent(value)
+            || LocalCommandRouter.isDiscussionAboutContent(value) {
+            return nil
+        }
         let hasNumber = value.unicodeScalars.contains { (48...57).contains($0.value) }
         if value.contains("亮度"),
            !hasNumber, !["调高", "调低", "最高", "最低", "增加", "降低"].contains(where: value.contains) {
@@ -528,6 +545,11 @@ final class AssistantRuntime {
         let firstLine = title.split(whereSeparator: \.isNewline).first.map(String.init) ?? title
         let value = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? "执行 Mac 操作" : String(value.prefix(28))
+    }
+
+    static func explicitlyRequestsRefresh(_ text: String) -> Bool {
+        let value = text.lowercased()
+        return ["再查", "重新查", "重新检查", "再扫描", "刷新", "现在再看", "再检测一次"].contains(where: value.contains)
     }
 
     func cancelCurrentWork() {
@@ -640,10 +662,11 @@ final class AssistantRuntime {
                 case .capabilities:
                     let capabilities = await LocalMacCapabilityManifest.current()
                     let brightness = capabilities.brightnessAvailable ? "屏幕亮度" : "亮度能力检测（当前屏幕不支持直接控制）"
+                    let toolNames = MacCareTool.allCases.map(\.rawValue).joined(separator: "、")
                     let reply = """
                     我是浮屿 FuYu，一款以这台 Mac 为核心的本机智能助手。
 
-                    我能直接在本机完成九项电脑管家检测、音量与静音控制、\(brightness)，并持续监测异常发热进程。电脑管家的检测结果会同步给我，所以你可以直接接着问“有什么问题”或“执行哪条建议”。
+                    当前版本能直接在本机完成 \(MacCareTool.allCases.count) 项工具：\(toolNames)。另外支持音量与静音控制、\(brightness)，并持续监测异常发热进程。电脑管家的检测结果会同步给我，所以你可以直接接着问“有什么问题”或“执行哪条建议”。
 
                     只读检查和可逆设置优先由我自己完成，不经过 Hermes；跨应用的复杂任务才交给 Hermes。清理、移动、删除、发送或修改安全设置前，我会先说明收益和风险并等你确认。
                     """
@@ -677,7 +700,7 @@ final class AssistantRuntime {
                     title: "电脑管家 · \(tool.rawValue)", result: report.displayText,
                     succeeded: true, profile: self.preferences.profile
                 )
-                self.deliverReply(report.displayText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
+                self.deliverReply(report.conversationText, suggestedSpoken: report.headline, shouldSpeak: shouldSpeak)
             } catch is CancellationError {
                 self.state.finishBackgroundJob(jobID, summary: "已取消", failed: true)
             } catch {
