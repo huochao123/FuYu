@@ -184,6 +184,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runVoiceSmokeTest()
         } else if CommandLine.arguments.contains("--voice-cycle-smoke-test") {
             runVoiceCycleSmokeTest()
+        } else if CommandLine.arguments.contains("--voice-dispatch-smoke-test") {
+            runVoiceDispatchSmokeTest()
         } else if CommandLine.arguments.contains("--model-smoke-test") {
             Task { @MainActor [weak self] in
                 guard let self else { exit(1) }
@@ -420,6 +422,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 try? "FAIL\n\(error.localizedDescription)".write(to: resultURL, atomically: true, encoding: .utf8)
                 fputs("浮屿连续语音自检失败：\(error.localizedDescription)\n", stderr)
+                self.shortcutMonitor?.stop()
+                exit(1)
+            }
+        }
+    }
+
+    private func runVoiceDispatchSmokeTest() {
+        Task { @MainActor [weak self] in
+            guard let self, let voiceService = self.voiceService else { exit(1) }
+            do {
+                let result = try await voiceService.testConsecutiveSubmissionDispatches()
+                print("浮屿连续提交自检通过：\(result)")
+                self.shortcutMonitor?.stop()
+                exit(0)
+            } catch {
+                fputs("浮屿连续提交自检失败：\(error.localizedDescription)\n", stderr)
                 self.shortcutMonitor?.stop()
                 exit(1)
             }

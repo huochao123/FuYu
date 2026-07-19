@@ -98,27 +98,44 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func testConsecutiveListeningCycles() async throws -> String {
         cancelAll()
-        try await beginRawAudioCaptureForTest()
-        guard await waitForAudioBuffers() else {
-            cancelAll()
-            throw VoicePipelineTestError.noAudioBuffers(cycle: 1)
+        var counts: [Int] = []
+        for cycle in 1...4 {
+            try await beginRawAudioCaptureForTest()
+            guard await waitForAudioBuffers() else {
+                cancelAll()
+                throw VoicePipelineTestError.noAudioBuffers(cycle: cycle)
+            }
+            counts.append(audioBufferCount)
+            stopRecognitionResources()
+            cleanupRecording()
+            if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+            if cycle < 4 { try? await Task.sleep(for: .milliseconds(750)) }
         }
-        let firstCount = audioBufferCount
-        stopRecognitionResources()
-        cleanupRecording()
-        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
+        let summary = counts.enumerated().map { "第\($0.offset + 1)轮 \($0.element)" }.joined(separator: "，")
+        return "连续四轮均收到真实麦克风音频缓冲（\(summary)）"
+    }
 
-        try? await Task.sleep(for: .milliseconds(750))
-        try await beginRawAudioCaptureForTest()
-        guard await waitForAudioBuffers() else {
-            cancelAll()
-            throw VoicePipelineTestError.noAudioBuffers(cycle: 2)
+    func testConsecutiveSubmissionDispatches() async throws -> String {
+        cancelAll()
+        let originalHandler = onTranscriptReady
+        defer { onTranscriptReady = originalHandler }
+        var dispatched: [String] = []
+        onTranscriptReady = { dispatched.append($0) }
+
+        for cycle in 1...4 {
+            let text = "连续语音第\(cycle)轮"
+            latestTranscript = ""
+            state.beginListening()
+            await finalizeRecognitionSubmission(
+                capturedTranscript: text,
+                capturedRecordingURL: nil,
+                submittedGeneration: cycle
+            )
+            guard dispatched.count == cycle, dispatched.last == text else {
+                throw VoicePipelineTestError.submissionNotDispatched(cycle: cycle)
+            }
         }
-        let secondCount = audioBufferCount
-        stopRecognitionResources()
-        cleanupRecording()
-        if let outputVolumeRestoreTask { await outputVolumeRestoreTask.value }
-        return "连续两轮均收到真实麦克风音频缓冲（第一轮 \(firstCount)，第二轮 \(secondCount)）"
+        return "连续四轮均完成最终文字展示并送交 AI（\(dispatched.joined(separator: "、"))）"
     }
 
     private func beginRawAudioCaptureForTest() async throws {
@@ -356,7 +373,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
 
     func stopListeningAndSubmit() {
         guard isListening else { return }
-        logger.notice("Submitting recognition generation \(self.recognitionGeneration)")
+        let submittedGeneration = recognitionGeneration
+        logger.notice("Submitting recognition generation \(submittedGeneration)")
         silenceTask?.cancel()
         silenceTask = nil
         audioStartupWatchdogTask?.cancel()
@@ -373,37 +391,69 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         let capturedRecordingURL = recordingURL
         submissionTask?.cancel()
         submissionTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(320))
-            guard let self, !Task.isCancelled else { return }
-            var finalText = self.latestTranscript.isEmpty ? captured : self.latestTranscript
-            self.stopRecognitionResources()
-            self.state.beginFinalizingRecognition()
-            if self.preferences.recognitionEngine == .mimoHybrid,
-               let capturedRecordingURL {
-                do {
-                    let corrected = try await self.transcribeWithMiMo(fileURL: capturedRecordingURL)
-                    if !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        finalText = Self.preferredTranscript(
-                            apple: finalText,
-                            mimo: corrected
-                        )
-                    }
-                } catch {
-                    // Apple live recognition remains the offline/failure fallback.
+            guard let self else { return }
+            await self.finalizeRecognitionSubmission(
+                capturedTranscript: captured,
+                capturedRecordingURL: capturedRecordingURL,
+                submittedGeneration: submittedGeneration
+            )
+        }
+    }
+
+    private func finalizeRecognitionSubmission(
+        capturedTranscript: String,
+        capturedRecordingURL: URL?,
+        submittedGeneration: Int
+    ) async {
+        try? await Task.sleep(for: .milliseconds(320))
+        guard !Task.isCancelled else { return }
+        var finalText = latestTranscript.isEmpty ? capturedTranscript : latestTranscript
+        logger.notice("Finalizing recognition generation \(submittedGeneration); Apple characters \(finalText.count)")
+        stopRecognitionResources()
+        state.beginFinalizingRecognition()
+        if preferences.recognitionEngine == .mimoHybrid,
+           let capturedRecordingURL {
+            do {
+                let corrected = try await transcribeWithMiMo(fileURL: capturedRecordingURL)
+                if !corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    logger.notice("MiMo corrected recognition generation \(submittedGeneration); characters \(corrected.count)")
+                    finalText = Self.preferredTranscript(apple: finalText, mimo: corrected)
                 }
+            } catch {
+                // Correction improves the transcript but never owns delivery.
+                // Timeout or service failure must fall back to the live text.
+                logger.error("MiMo recognition correction failed: \(error.localizedDescription)")
             }
-            self.cleanupRecording()
-            guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                self.state.resetToIdle()
-                return
-            }
-            self.state.presentFinalRecognition(finalText)
-            // Keep the exact sentence FuYu will use on screen long enough for
-            // the user to verify it before the assistant starts thinking.
-            try? await Task.sleep(for: .milliseconds(650))
-            guard !Task.isCancelled else { return }
-            self.listeningForTaskInterruption = false
-            self.onTranscriptReady?(finalText)
+        }
+        cleanupRecording()
+        guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.error("Recognition generation \(submittedGeneration) produced no final text")
+            resumeContinuousListening(after: "这句没有听清，我还在，继续说就好。")
+            return
+        }
+        state.presentFinalRecognition(finalText)
+        try? await Task.sleep(for: .milliseconds(650))
+        guard !Task.isCancelled else {
+            logger.error("Recognition generation \(submittedGeneration) was cancelled before AI dispatch")
+            return
+        }
+        listeningForTaskInterruption = false
+        logger.notice("Dispatching recognition generation \(submittedGeneration) to assistant; characters \(finalText.count)")
+        onTranscriptReady?(finalText)
+    }
+
+    private func resumeContinuousListening(after message: String) {
+        guard preferences.continuousConversation, state.voiceSessionActive else {
+            state.presentError(message)
+            return
+        }
+        state.beginListening()
+        state.updateTranscript(message)
+        recoveryTask?.cancel()
+        recoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, !Task.isCancelled, self.state.voiceSessionActive else { return }
+            await self.beginListening()
         }
     }
 
@@ -520,7 +570,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                     if self.preferences.speechFallback {
                         self.speakWithSystem(cleaned)
                     } else {
-                        self.state.presentError("语音生成失败：\(error.localizedDescription)")
+                        self.resumeContinuousListening(after: "语音生成失败，但对话没有结束。你可以继续说。")
                     }
                 }
             }
@@ -657,7 +707,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             url: preferences.mimoEndpoint,
             key: key,
             body: body,
-            extraHeaders: ["api-key": key]
+            extraHeaders: ["api-key": key],
+            timeoutInterval: 6
         )
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let choices = object?["choices"] as? [[String: Any]]
@@ -710,7 +761,8 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         url: String,
         key: String,
         body: [String: Any],
-        extraHeaders: [String: String] = [:]
+        extraHeaders: [String: String] = [:],
+        timeoutInterval: TimeInterval = 15
     ) async throws -> Data {
         guard let endpoint = URL(string: url) else { throw VoiceOutputError.invalidConfiguration }
         var request = URLRequest(url: endpoint)
@@ -718,6 +770,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         extraHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.timeoutInterval = timeoutInterval
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -916,7 +969,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 self.audioStartupWatchdogTask = nil
                 self.stopRecognitionResources()
                 self.cleanupRecording()
-                self.state.presentError("麦克风没有收到音频，已停止本轮识别。请再次按 Fn 重试。")
+                self.resumeContinuousListening(after: "这一轮没有收到麦克风音频，我还在重新连接。")
                 return
             }
             guard Self.shouldRestartAudioCapture(
@@ -1039,7 +1092,12 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         ) else {
             recoveryTask?.cancel()
             recoveryTask = nil
-            state.presentError("\(message)；自动恢复失败，请再次唤醒。")
+            if preferences.continuousConversation, state.voiceSessionActive {
+                recognitionRecoveryAttempts = 0
+                resumeContinuousListening(after: "\(message)；我会保持对话并重新收音。")
+            } else {
+                state.presentError("\(message)；自动恢复失败，请再次唤醒。")
+            }
             return
         }
         recognitionRecoveryAttempts += 1
@@ -1105,6 +1163,11 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                   self.isListening,
                   self.recognitionGeneration == generation,
                   self.latestTranscript == transcript else { return }
+            // This task is the auto-submit trigger. Clear its stored reference
+            // before entering stopListeningAndSubmit so that method does not
+            // cancel the currently executing task and poison the finalization
+            // task created immediately afterwards.
+            self.silenceTask = nil
             self.stopListeningAndSubmit()
         }
     }
@@ -1159,6 +1222,7 @@ final class VoiceService: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
             }
             if self.detectedUserAudio,
                self.preferences.recognitionEngine == .mimoHybrid {
+                self.silenceTask = nil
                 self.stopListeningAndSubmit()
                 return
             }
@@ -1257,6 +1321,7 @@ private enum VoiceOutputError: LocalizedError {
 
 private enum VoicePipelineTestError: LocalizedError {
     case noAudioBuffers(cycle: Int)
+    case submissionNotDispatched(cycle: Int)
     case microphonePermissionMissing
     case invalidInputFormat
 
@@ -1264,6 +1329,8 @@ private enum VoicePipelineTestError: LocalizedError {
         switch self {
         case let .noAudioBuffers(cycle):
             "第 \(cycle) 轮麦克风没有返回音频缓冲。"
+        case let .submissionNotDispatched(cycle):
+            "第 \(cycle) 轮最终文字没有送交 AI。"
         case .microphonePermissionMissing:
             "麦克风权限尚未允许。"
         case .invalidInputFormat:

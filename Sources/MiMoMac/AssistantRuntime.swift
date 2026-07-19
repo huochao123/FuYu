@@ -119,14 +119,18 @@ final class AssistantRuntime {
         } else {
             state.recordActionStatus("用户通过语音取消了操作", failed: true)
             cancelCurrentWork()
-            state.resetToIdle(message: "操作已取消")
+            continueVoiceConversation(after: "操作已取消，对话仍在继续。")
         }
     }
 
     private func handleUserInput(_ text: String, shouldSpeak: Bool, isVoice: Bool) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else {
-            state.presentError("没有听清，请再说一次。")
+            if isVoice, state.voiceSessionActive {
+                continueVoiceConversation(after: "没有听清，我还在，请再说一次。")
+            } else {
+                state.presentError("没有听清，请再说一次。")
+            }
             return
         }
 
@@ -137,7 +141,11 @@ final class AssistantRuntime {
             if denyPhrases.contains(where: compact.contains) {
                 state.recordActionStatus(isVoice ? "用户通过语音取消了操作" : "用户通过文字取消了操作", failed: true)
                 cancelCurrentWork()
-                state.resetToIdle(message: "操作已取消")
+                if isVoice, state.voiceSessionActive {
+                    continueVoiceConversation(after: "操作已取消，对话仍在继续。")
+                } else {
+                    state.resetToIdle(message: "操作已取消")
+                }
                 return
             }
             if approvePhrases.contains(where: compact.contains) {
@@ -317,7 +325,10 @@ final class AssistantRuntime {
                     self.deliverReply(text, suggestedSpoken: spoken, shouldSpeak: shouldSpeak)
                 case let .tool(call):
                     guard let localCommand = AgentToolRegistry.localCommand(for: call) else {
-                        self.state.presentError("浮屿没有识别出这个本机工具的参数，未执行任何操作。")
+                        self.presentRecoverableFailure(
+                            "浮屿没有识别出这个本机工具的参数，未执行任何操作。",
+                            shouldSpeak: shouldSpeak
+                        )
                         return
                     }
                     if case let .scan(tool) = localCommand,
@@ -345,7 +356,7 @@ final class AssistantRuntime {
                             succeeded: false,
                             profile: self.preferences.profile
                         )
-                        self.state.presentError(message)
+                        self.presentRecoverableFailure(message, shouldSpeak: shouldSpeak)
                         return
                     }
                     if Self.requiresPlanReview(userText: effectiveRequest) {
@@ -395,7 +406,7 @@ final class AssistantRuntime {
                 // action produced two nearly identical cards for one timeout.
                 self.deliverReply(message, suggestedSpoken: "模型响应超时，本机工具仍然可以直接使用。", shouldSpeak: shouldSpeak)
             } catch {
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
     }
@@ -536,8 +547,8 @@ final class AssistantRuntime {
         }
         return [
             "结束对话", "关闭对话", "停止对话", "退出对话",
-            "结束聊天", "关闭聊天", "结束语音", "关闭语音", "退出语音",
-            "结束通话", "关闭通话", "挂断", "挂断电话"
+            "结束聊天", "关闭聊天", "结束语音", "关闭语音", "退出语音", "语音取消", "取消语音", "取消语音对话",
+            "结束通话", "关闭通话", "取消通话", "挂断", "挂断电话"
         ].contains(compact)
     }
 
@@ -677,7 +688,7 @@ final class AssistantRuntime {
             } catch {
                 self.state.markTaskFocus(.failed)
                 self.state.recordActionStatus("浮屿本机执行失败：\(error.localizedDescription)", failed: true)
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
     }
@@ -705,7 +716,7 @@ final class AssistantRuntime {
                 self.state.finishBackgroundJob(jobID, summary: "已取消", failed: true)
             } catch {
                 self.state.finishBackgroundJob(jobID, summary: error.localizedDescription, failed: true)
-                self.state.presentError(error.localizedDescription)
+                self.presentRecoverableFailure(error.localizedDescription, shouldSpeak: shouldSpeak)
             }
         }
         readOnlyTasks[jobID] = task
@@ -750,7 +761,7 @@ final class AssistantRuntime {
 
     private func executeApprovedLocalAction(approvalID: UUID) {
         guard let pending = pendingLocalAction, pending.approvalID == approvalID else {
-            state.presentError("本机操作的确认信息已失效，请重新检测。")
+            presentRecoverableFailure("本机操作的确认信息已失效，请重新检测。", shouldSpeak: state.voiceSessionActive)
             return
         }
         pendingLocalAction = nil
@@ -843,7 +854,7 @@ final class AssistantRuntime {
 
     private func executeApprovedAction(approvalID: UUID) {
         guard let action = pendingAction, action.approvalID == approvalID else {
-            state.presentError("批准信息已失效，请重新说一次。")
+            presentRecoverableFailure("批准信息已失效，请重新说一次。", shouldSpeak: state.voiceSessionActive)
             return
         }
         pendingAction = nil
@@ -950,6 +961,35 @@ final class AssistantRuntime {
             if state.interactionSource == .voice {
                 voice.continueAfterSilentReply()
             }
+        }
+    }
+
+    /// Cancelling an operation is not the same as ending the conversation.
+    /// Only the dedicated end-command path or the UI cancel control may clear
+    /// `voiceSessionActive`.
+    private func continueVoiceConversation(after message: String) {
+        guard state.voiceSessionActive else {
+            state.resetToIdle(message: message)
+            return
+        }
+        state.beginListening()
+        state.updateTranscript(message)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, self.state.voiceSessionActive else { return }
+            await self.voice.startListening()
+        }
+    }
+
+    private func presentRecoverableFailure(_ message: String, shouldSpeak: Bool) {
+        if state.voiceSessionActive {
+            if shouldSpeak {
+                deliverReply(message, suggestedSpoken: message, shouldSpeak: true)
+            } else {
+                continueVoiceConversation(after: message)
+            }
+        } else {
+            state.presentError(message)
         }
     }
 }

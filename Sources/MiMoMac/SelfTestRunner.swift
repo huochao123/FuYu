@@ -29,6 +29,21 @@ enum SelfTestRunner {
         state.beginListening()
         check(state.overlayMode == .voice && state.phase == .listening, "录音状态切换")
         check(state.voiceSessionActive && state.isExpanded, "语音通话会话保持开启")
+        state.presentError("暂时识别失败")
+        check(
+            state.voiceSessionActive && state.isExpanded && state.phase == .error,
+            "普通错误不能隐式结束连续语音会话"
+        )
+        state.beginListening()
+        var resumedAfterTransientCard = false
+        state.onVoiceRequested = { resumedAfterTransientCard = true }
+        state.presentNotification("临时提醒", duration: .seconds(30))
+        state.dismissTransientCard()
+        check(
+            state.voiceSessionActive && resumedAfterTransientCard,
+            "关闭临时卡片只恢复收音而不结束语音会话"
+        )
+        state.beginListening()
         state.beginBackgroundTask("整理下载文件夹")
         check(
             state.backgroundTaskStatus == .running && state.backgroundTaskTitle == "整理下载文件夹",
@@ -527,6 +542,8 @@ enum SelfTestRunner {
             AssistantRuntime.isEndConversationCommand("结束对话")
                 && AssistantRuntime.isEndConversationCommand("请关闭对话吧")
                 && AssistantRuntime.isEndConversationCommand("挂断电话")
+                && AssistantRuntime.isEndConversationCommand("语音取消")
+                && AssistantRuntime.isEndConversationCommand("请取消语音对话吧")
                 && !AssistantRuntime.isEndConversationCommand("我们继续对话"),
             "语音口令可以直接结束连续对话"
         )

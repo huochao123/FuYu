@@ -397,12 +397,16 @@ final class AppState: ObservableObject {
         replyCollapseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(12))
             guard let self, !Task.isCancelled, self.phase == .answered else { return }
+            // A delayed reply collapse is only visual housekeeping. It must
+            // never become an implicit "end voice session" action.
+            guard !self.voiceSessionActive else { return }
             self.resetToIdle()
         }
     }
 
     func presentError(_ message: String) {
         errorDismissTask?.cancel()
+        let preserveVoiceSession = voiceSessionActive && interactionSource == .voice
         showPermission = false
         isExpanded = interactionSource == .voice
         phase = .error
@@ -410,10 +414,31 @@ final class AppState: ObservableObject {
         transcript = message
         progress = 0
         appendConversation(.error, message)
+        // Transient recognition/model failures may interrupt a turn, but the
+        // user's continuous conversation remains active until an explicit end
+        // command or a manual cancel. Keeping the error visible is safer than
+        // silently collapsing a session that the user did not end.
+        guard !preserveVoiceSession else { return }
         errorDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(4))
             guard let self, !Task.isCancelled, self.phase == .error else { return }
             self.resetToIdle()
+        }
+    }
+
+    func dismissTransientCard() {
+        replyCollapseTask?.cancel()
+        replyCollapseTask = nil
+        errorDismissTask?.cancel()
+        errorDismissTask = nil
+        if voiceSessionActive {
+            interactionSource = .voice
+            showPermission = false
+            phase = .idle
+            isExpanded = true
+            requestVoice()
+        } else {
+            resetToIdle()
         }
     }
 
@@ -659,7 +684,14 @@ final class AppState: ObservableObject {
         replyCollapseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: duration)
             guard let self, !Task.isCancelled, self.interactionSource == .notification else { return }
-            self.resetToIdle()
+            if self.voiceSessionActive {
+                self.interactionSource = .voice
+                self.phase = .idle
+                self.isExpanded = true
+                self.requestVoice()
+            } else {
+                self.resetToIdle()
+            }
         }
     }
 
@@ -671,7 +703,16 @@ final class AppState: ObservableObject {
     func closeHistory() {
         showHistory = false
         if phase == .idle || phase == .answered || phase == .error {
-            resetToIdle()
+            if voiceSessionActive {
+                interactionSource = .voice
+                isExpanded = true
+                if phase == .answered || phase == .error {
+                    phase = .idle
+                    requestVoice()
+                }
+            } else {
+                resetToIdle()
+            }
         }
     }
 
